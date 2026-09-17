@@ -1075,6 +1075,21 @@ if(CONFIG_BOARD_TYPE_ESP32_P4_FUNCTION_EV_BOARD)
         sdmmc
     )
 endif()
+if(CONFIG_GENIUS_DEVICE_CORE)
+    list(APPEND COMMON_SOUNDS
+        "genius/alarm.ogg"
+        "genius/ews.ogg"
+    )
+    list(APPEND SOURCES
+        "genius/device_config.cc"
+        "genius/portal.cc"
+        "genius/tools.cc"
+        "genius/media_decoder.cc"
+        "genius/native_services.cc"
+        "genius/command_handler.cc"
+        "genius/device_channel.cc"
+    )
+endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
@@ -1212,7 +1227,7 @@ endif()
 
 if(CONFIG_BOARD_TYPE_ESP_HI)
 # Pin AAF assets to a fixed image_player commit so builds stay reproducible.
-# Only pack AAF files referenced by emoji_display.cc — the full test_8bit set
+# Only pack AAF files referenced by emoji_display.cc â€” the full test_8bit set
 # plus wakenet models overflows the 1MB assets partition on the 4MB ESP-HI
 # flash map (see #2228).
 set(URL "https://github.com/espressif2022/image_player/raw/d61e0ccb1d7b0a2a214d0c90f5451fd683f41682/test_apps/test_8bit")

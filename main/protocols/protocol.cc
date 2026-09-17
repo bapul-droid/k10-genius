@@ -8,6 +8,18 @@
 void Protocol::AddTextFontCapabilities(cJSON* root) {
     auto capability = Assets::GetInstance().text_font_capability();
     cJSON* features = cJSON_GetObjectItem(root, "features");
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    if (cJSON_IsObject(features)) {
+        cJSON_AddBoolToObject(features, "media", true);
+        cJSON_AddBoolToObject(features, "alarm", true);
+        cJSON_AddBoolToObject(features, "ews", true);
+        cJSON_AddStringToObject(features, "media_formats", "ogg-opus,mp3,aac-adts,wav-pcm");
+        auto caps = cJSON_AddObjectToObject(root, "capabilities");
+        cJSON_AddBoolToObject(caps, "media", true);
+        cJSON_AddBoolToObject(caps, "alarm", true);
+        cJSON_AddBoolToObject(caps, "ews", true);
+    }
+#endif
     if (cJSON_IsObject(features)) {
         cJSON_AddBoolToObject(features, "glyph_push", capability.glyph_push);
     }

@@ -1,4 +1,18 @@
 #include "application.h"
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+#include "genius/command_handler.h"
+#include "genius/native_services.h"
+namespace {
+bool GeniusUrl(const std::string& url) {
+    if (url.empty() || url.size() > 2048 || url.find_first_of("\r\n\t ") != std::string::npos)
+        return false;
+    if (url == "builtin:alarm" || url == "builtin:notification" || url == "builtin:ews")
+        return true;
+    auto prefix = url.starts_with("https://") ? 8 : url.starts_with("http://") ? 7 : 0;
+    return prefix > 0 && url.size() > size_t(prefix) && url[prefix] != '/';
+}
+}  // namespace
+#endif
 #include "assets.h"
 #include "assets/lang_config.h"
 #include "audio_codec.h"
@@ -187,12 +201,21 @@ void Application::Run() {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & MAIN_EVENT_ERROR) {
-            if (GetDeviceState() == kDeviceStateNotifying) {
-                StopNotification();
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+            if (genius_priority_.load() == 1) {
+                ESP_LOGW(TAG, "Keeping offline local alarm active");
+            } else {
+                CancelGeniusLifecycle("network_error");
+#endif
+                if (GetDeviceState() == kDeviceStateNotifying) {
+                    StopNotification();
+                }
+                SetDeviceState(kDeviceStateIdle);
+                Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
+                      Lang::Sounds::OGG_EXCLAMATION);
+#ifdef CONFIG_GENIUS_DEVICE_CORE
             }
-            SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
-                  Lang::Sounds::OGG_EXCLAMATION);
+#endif
         }
 
         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
@@ -214,6 +237,7 @@ void Application::Run() {
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
             if (audio_service_.IsPlaybackIdle()) {
                 notify_player_.OnPlaybackDrained();
+                TryStartGeniusPlayback();
             }
             // Deferred listening start (auto mode): the playback queue has
             // drained, so it is now safe to enable voice processing.
@@ -272,6 +296,7 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
             clock_ticks_++;
+            TryStartGeniusPlayback();
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
 
@@ -313,9 +338,16 @@ void Application::HandleNetworkConnectedEvent() {
 }
 
 void Application::HandleNetworkDisconnectedEvent() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    const bool local_alarm = genius_priority_.load() == 1;
+    if (!local_alarm)
+        CancelGeniusLifecycle("network_lost");
+#else
+    const bool local_alarm = false;
+#endif
     // Close current conversation when network disconnected
     auto state = GetDeviceState();
-    if (state == kDeviceStateNotifying) {
+    if (state == kDeviceStateNotifying && !local_alarm) {
         StopNotification();
     }
     if (state == kDeviceStateConnecting || state == kDeviceStateListening ||
@@ -567,8 +599,12 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnAudioChannelClosed([this, &board]() {
+        if (GetDeviceState() == kDeviceStateNotifying)
+            return;
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            if (GetDeviceState() == kDeviceStateNotifying)
+                return;
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -582,6 +618,57 @@ void Application::InitializeProtocol() {
             ESP_LOGW(TAG, "Incoming JSON message has no type");
             return;
         }
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+        auto action = cJSON_GetObjectItemCaseSensitive(root, "action");
+        if (cJSON_IsString(action)) {
+            auto result = DispatchGeniusCommand(root);
+            if (result.recognized)
+                return;
+        }
+        if (strcmp(type->valuestring, "command") == 0) {
+            auto command = cJSON_GetObjectItemCaseSensitive(root, "command");
+            DispatchGeniusCommand(command ? command : root);
+            return;
+        }
+        if (strcmp(type->valuestring, "alarm_sync") == 0) {
+            std::string error;
+            auto payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+            GeniusNativeServices::GetInstance().SetAlarm(payload ? payload : root, error);
+            return;
+        }
+        if (strcmp(type->valuestring, "alarm_cancel") == 0) {
+            auto payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+            auto id = cJSON_GetObjectItemCaseSensitive(payload ? payload : root, "alarm_id");
+            std::string error;
+            if (cJSON_IsString(id))
+                GeniusNativeServices::GetInstance().CancelAlarm(id->valuestring, error);
+            return;
+        }
+        if (strcmp(type->valuestring, "ews_alert") == 0) {
+            auto source = cJSON_GetObjectItemCaseSensitive(root, "source");
+            auto text = cJSON_GetObjectItemCaseSensitive(root, "text");
+            auto audio = cJSON_GetObjectItemCaseSensitive(root, "audio_url");
+            if (cJSON_IsString(source) && strcmp(source->valuestring, "BMKG") == 0 &&
+                cJSON_IsString(text) && (!audio || cJSON_IsString(audio)))
+                RequestGeniusAlert("ews", text->valuestring, audio ? audio->valuestring : "");
+            return;
+        }
+        if (strcmp(type->valuestring, "media_stop") == 0) {
+            StopGeniusPlayback();
+            return;
+        }
+        if (strcmp(type->valuestring, "media_play") == 0) {
+            auto url = cJSON_GetObjectItemCaseSensitive(root, "audio_url");
+            auto title = cJSON_GetObjectItemCaseSensitive(root, "title");
+            if (cJSON_IsString(url) && (!title || cJSON_IsString(title)))
+                RequestGeniusPlayback(url->valuestring, title ? title->valuestring : "Media");
+            return;
+        }
+        if (strcmp(type->valuestring, "alarm_sound") == 0) {
+            RequestGeniusAlert("alarm", "Alarm");
+            return;
+        }
+#endif
         if (strcmp(type->valuestring, "notify") == 0) {
             auto audio_url = cJSON_GetObjectItem(root, "audio_url");
             if (!cJSON_IsString(audio_url) || audio_url->valuestring[0] == '\0') {
@@ -622,6 +709,13 @@ void Application::InitializeProtocol() {
             }
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+                    if (genius_priority_.load() > 0)
+                        return;
+                    CancelGeniusLifecycle("conversation_takeover");
+#endif
+                    if (GetDeviceState() == kDeviceStateNotifying)
+                        StopNotification();
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
@@ -773,11 +867,14 @@ void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT
 void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING); }
 
 void Application::HandleToggleChatEvent() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    CancelGeniusLifecycle("interrupted");
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
         StopNotification();
-        state = kDeviceStateIdle;
+        state = GetDeviceState();
     }
 
     if (state == kDeviceStateActivating) {
@@ -837,11 +934,14 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    CancelGeniusLifecycle("interrupted");
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
         StopNotification();
-        state = kDeviceStateIdle;
+        state = GetDeviceState();
     }
 
     if (state == kDeviceStateActivating) {
@@ -890,6 +990,9 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    CancelGeniusLifecycle("interrupted");
+#endif
     if (!protocol_) {
         return;
     }
@@ -902,7 +1005,8 @@ void Application::HandleWakeWordDetectedEvent() {
         BeginWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateNotifying) {
         StopNotification();
-        BeginWakeWordInvoke(wake_word);
+        if (GetDeviceState() == kDeviceStateIdle)
+            BeginWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
         // Clear send queue to avoid sending residues to server
@@ -1051,7 +1155,9 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateNotifying:
             display->SetStatus(Lang::Strings::SPEAKING);
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+            audio_service_.EnableWakeWordDetection(notification_return_state_ !=
+                                                       kDeviceStateWifiConfiguring &&
+                                                   audio_service_.IsAfeWakeWord());
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1093,16 +1199,23 @@ void Application::ConfigureWakeWordForListening() {
 #endif
 }
 
-void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles) {
-    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
+void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles,
+                                    bool popup) {
+    bool config_sound = false;
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    config_sound =
+        GetDeviceState() == kDeviceStateWifiConfiguring && audio_url.starts_with("builtin:");
+#endif
+    if ((!config_sound && GetDeviceState() != kDeviceStateIdle) || notify_player_.IsBusy()) {
         ESP_LOGW(TAG, "Ignoring notify message while device is busy");
         return;
     }
 
+    notification_return_state_ = config_sound ? kDeviceStateWifiConfiguring : kDeviceStateIdle;
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
     audio_service_.EnableVoiceProcessing(false);
-    audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+    audio_service_.EnableWakeWordDetection(!config_sound && audio_service_.IsAfeWakeWord());
     audio_service_.ReleaseWakeWordResources();
     while (audio_service_.PopPacketFromSendQueue()) {
         // Discard microphone audio left over from a previous conversation.
@@ -1118,7 +1231,8 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
     if (playback_id == 0) {
         playback_id = ++notification_playback_id_;
     }
-    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    if (popup)
+        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
 
     bool started = notify_player_.Start(
         std::move(audio_url), std::move(subtitles), playback_id,
@@ -1146,7 +1260,7 @@ void Application::StopNotification() {
     board.GetDisplay()->SetChatMessage("assistant", "");
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
     if (GetDeviceState() == kDeviceStateNotifying) {
-        SetDeviceState(kDeviceStateIdle);
+        SetDeviceState(notification_return_state_);
     }
 }
 
@@ -1157,6 +1271,7 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
     ESP_LOGI(TAG, "Notification playback %lu %s", static_cast<unsigned long>(playback_id),
              success ? "completed" : "failed");
     StopNotification();
+    GeniusNotificationFinished(success);
 }
 
 void Application::Schedule(std::function<void()>&& callback) {
@@ -1186,6 +1301,7 @@ ListeningMode Application::GetDefaultListeningMode() const {
 
 void Application::Reboot() {
     ESP_LOGI(TAG, "Rebooting...");
+    CancelGeniusLifecycle("reboot");
     if (GetDeviceState() == kDeviceStateNotifying) {
         StopNotification();
     }
@@ -1201,6 +1317,9 @@ void Application::Reboot() {
 }
 
 bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    CancelGeniusLifecycle("upgrade");
+#endif
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
 
@@ -1260,6 +1379,9 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
 }
 
 void Application::WakeWordInvoke(const std::string& wake_word) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    Schedule([this]() { CancelGeniusLifecycle("conversation_takeover"); });
+#endif
     if (!protocol_) {
         return;
     }
@@ -1278,7 +1400,8 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
         Schedule([this, wake_word]() {
             if (GetDeviceState() == kDeviceStateNotifying) {
                 StopNotification();
-                BeginWakeWordInvoke(wake_word);
+                if (GetDeviceState() == kDeviceStateIdle)
+                    BeginWakeWordInvoke(wake_word);
             }
         });
     } else if (state == kDeviceStateSpeaking) {
@@ -1359,6 +1482,9 @@ void Application::ResetProtocol() {
         if (GetDeviceState() == kDeviceStateNotifying) {
             StopNotification();
         }
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+        CancelGeniusLifecycle("interrupted");
+#endif
         // Close audio channel if opened
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
             protocol_->CloseAudioChannel();
@@ -1366,4 +1492,265 @@ void Application::ResetProtocol() {
         // Reset protocol
         protocol_.reset();
     });
+}
+
+bool Application::RequestGeniusPlayback(const std::string& url, const std::string& title) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    if (!GeniusUrl(url) || title.size() > 128 || genius_priority_.load() > 0)
+        return false;
+    auto state = GetDeviceState();
+    bool builtin = url.starts_with("builtin:");
+    if (!(builtin && state == kDeviceStateWifiConfiguring) && state != kDeviceStateIdle &&
+        state != kDeviceStateListening && state != kDeviceStateSpeaking &&
+        state != kDeviceStateNotifying)
+        return false;
+    Schedule([this, url, title]() {
+        if (genius_priority_.load() > 0)
+            return;
+        if (GetDeviceState() == kDeviceStateNotifying)
+            StopNotification();
+        genius_active_kind_.clear();
+        genius_pending_kind_ = "media";
+        genius_pending_url_ = url;
+        genius_pending_title_ = title;
+        genius_pending_since_ = esp_timer_get_time();
+        PublishGeniusLifecycle("queued");
+        TryStartGeniusPlayback();
+    });
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool Application::RequestGeniusAlert(const std::string& kind, const std::string& text,
+                                     const std::string& audio_url) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    if ((kind != "alarm" && kind != "ews") || text.empty() || text.size() > 1024 ||
+        (!audio_url.empty() && (!GeniusUrl(audio_url) || audio_url.starts_with("builtin:"))))
+        return false;
+    auto state = GetDeviceState();
+    if (!(kind == "alarm" && state == kDeviceStateWifiConfiguring) &&
+        state != kDeviceStateConnecting && state != kDeviceStateIdle &&
+        state != kDeviceStateListening && state != kDeviceStateSpeaking &&
+        state != kDeviceStateNotifying)
+        return false;
+    int priority = kind == "ews" ? 2 : 1;
+    if (genius_priority_.load() > priority)
+        return false;
+    Schedule([this, kind, text, audio_url, priority]() {
+        if (genius_priority_.load() > priority)
+            return;
+        if (genius_active_kind_ == "media" && !genius_current_url_.starts_with("builtin:")) {
+            genius_resume_url_ = genius_current_url_;
+            genius_resume_title_ = genius_current_title_;
+        } else if (genius_pending_kind_ == "media" && !genius_pending_url_.empty()) {
+            genius_resume_url_ = genius_pending_url_;
+            genius_resume_title_ = genius_pending_title_;
+        }
+        if (GetDeviceState() == kDeviceStateNotifying)
+            StopNotification();
+        if (GetDeviceState() == kDeviceStateSpeaking)
+            AbortSpeaking(kAbortReasonNone);
+        if (protocol_ && protocol_->IsAudioChannelOpened())
+            protocol_->CloseAudioChannel();
+        if (GetDeviceState() == kDeviceStateListening || GetDeviceState() == kDeviceStateSpeaking ||
+            GetDeviceState() == kDeviceStateConnecting)
+            SetDeviceState(kDeviceStateIdle);
+        audio_service_.EnableVoiceProcessing(false);
+        audio_service_.ResetDecoder();
+        genius_priority_ = priority;
+        genius_pending_kind_ = kind;
+        genius_pending_url_ = kind == "alarm" ? "builtin:alarm" : "builtin:ews";
+        genius_pending_title_ = kind == "alarm" ? text : "BMKG · Peringatan dini";
+        genius_pending_since_ = esp_timer_get_time();
+        genius_alert_text_ = kind == "ews" ? text : "";
+        genius_speech_url_ = audio_url;
+        genius_tts_id_.clear();
+        genius_alert_deadline_ = esp_timer_get_time() + 60000000;
+        PublishGeniusLifecycle("takeover");
+        TryStartGeniusPlayback();
+    });
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool Application::AcceptGeniusSpeech(const std::string& id, const std::string& url) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    if (id.empty() || id.size() > 64 || !GeniusUrl(url) || url.starts_with("builtin:"))
+        return false;
+    if (genius_priority_.load() != 2)
+        return false;
+    auto snapshot = GeniusStatusJson();
+    auto status = cJSON_Parse(snapshot.c_str());
+    auto request = cJSON_GetObjectItemCaseSensitive(status, "speech_request_id");
+    bool matches = cJSON_IsString(request) && id == request->valuestring;
+    cJSON_Delete(status);
+    if (!matches)
+        return false;
+    Schedule([this, id, url]() {
+        if (genius_priority_.load() != 2 || genius_tts_id_ != id ||
+            esp_timer_get_time() > genius_alert_deadline_)
+            return;
+        genius_tts_id_.clear();
+        genius_pending_kind_ = "ews_speech";
+        genius_alert_deadline_ = esp_timer_get_time() + 120000000;
+        genius_pending_url_ = url;
+        genius_pending_title_ = genius_alert_text_;
+        genius_pending_since_ = esp_timer_get_time();
+        TryStartGeniusPlayback();
+    });
+    return true;
+#else
+    return false;
+#endif
+}
+
+void Application::CancelGeniusLifecycle(const char* reason) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    genius_pending_url_.clear();
+    genius_resume_url_.clear();
+    genius_tts_id_.clear();
+    genius_priority_ = 0;
+    genius_active_kind_.clear();
+    PublishGeniusLifecycle(reason);
+#endif
+}
+void Application::StopGeniusPlayback() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    Schedule([this]() {
+        CancelGeniusLifecycle("stopped");
+        if (GetDeviceState() == kDeviceStateNotifying)
+            StopNotification();
+    });
+#endif
+}
+std::string Application::GeniusStatusJson() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    std::lock_guard<std::mutex> lock(genius_status_mutex_);
+    return genius_status_json_;
+#else
+    return "{}";
+#endif
+}
+void Application::PublishGeniusLifecycle(const char* state) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    auto json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "type", "device_event");
+    cJSON_AddStringToObject(json, "event", "playback");
+    cJSON_AddStringToObject(json, "state", state);
+    cJSON_AddStringToObject(
+        json, "kind",
+        genius_active_kind_.empty() ? genius_pending_kind_.c_str() : genius_active_kind_.c_str());
+    cJSON_AddStringToObject(json, "title", genius_current_title_.c_str());
+    cJSON_AddStringToObject(json, "speech_request_id", genius_tts_id_.c_str());
+    cJSON_AddStringToObject(json, "text", genius_alert_text_.c_str());
+    char* encoded = cJSON_PrintUnformatted(json);
+    std::string body = encoded ? encoded : "{}";
+    cJSON_free(encoded);
+    cJSON_Delete(json);
+    {
+        std::lock_guard<std::mutex> lock(genius_status_mutex_);
+        genius_status_json_ = body;
+    }
+    if (protocol_)
+        protocol_->SendDeviceEvent(body);
+#endif
+}
+void Application::FinishGeniusAlert(bool success) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    genius_priority_ = 0;
+    genius_tts_id_.clear();
+    genius_active_kind_.clear();
+    PublishGeniusLifecycle(success ? "completed" : "error");
+    if (!genius_resume_url_.empty()) {
+        genius_pending_url_ = std::move(genius_resume_url_);
+        genius_resume_url_.clear();
+        genius_pending_title_ = std::move(genius_resume_title_);
+        genius_pending_kind_ = "media";
+        genius_pending_since_ = esp_timer_get_time();
+        PublishGeniusLifecycle("resuming");
+    }
+#endif
+}
+void Application::GeniusNotificationFinished(bool success) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    if (genius_active_kind_ == "alarm") {
+        if (success && esp_timer_get_time() < genius_alert_deadline_) {
+            genius_pending_url_ = "builtin:alarm";
+            genius_pending_title_ = genius_current_title_;
+            genius_pending_kind_ = "alarm";
+            genius_pending_since_ = esp_timer_get_time();
+        } else
+            FinishGeniusAlert(success);
+    } else if (genius_active_kind_ == "ews") {
+        if (!success) {
+            FinishGeniusAlert(false);
+            return;
+        }
+        if (!genius_speech_url_.empty()) {
+            genius_pending_url_ = std::move(genius_speech_url_);
+            genius_pending_title_ = genius_alert_text_;
+            genius_pending_kind_ = "ews_speech";
+            genius_alert_deadline_ = esp_timer_get_time() + 120000000;
+            genius_pending_since_ = esp_timer_get_time();
+        } else {
+            genius_tts_id_ = "ews-" + std::to_string(notification_playback_id_);
+            genius_alert_deadline_ = esp_timer_get_time() + 20000000;
+            // The Generic backend transport is intentionally not invented.
+            // A normalized play_stream command supplies speech directly or
+            // correlates with this local request ID after the native chime.
+            PublishGeniusLifecycle("speech_pending");
+        }
+    } else if (genius_active_kind_ == "ews_speech")
+        FinishGeniusAlert(success);
+    else {
+        PublishGeniusLifecycle(success ? "completed" : "error");
+        genius_active_kind_.clear();
+    }
+    TryStartGeniusPlayback();
+#endif
+}
+void Application::TryStartGeniusPlayback() {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    if (genius_priority_.load() == 2 && genius_active_kind_ == "ews_speech" &&
+        esp_timer_get_time() > genius_alert_deadline_) {
+        StopNotification();
+        FinishGeniusAlert(false);
+    }
+    if (!genius_tts_id_.empty() && esp_timer_get_time() > genius_alert_deadline_) {
+        PublishGeniusLifecycle("tts_timeout");
+        FinishGeniusAlert(false);
+    }
+    if (genius_pending_url_.empty())
+        return;
+    auto state = GetDeviceState();
+    bool config_sound =
+        state == kDeviceStateWifiConfiguring && genius_pending_url_.starts_with("builtin:");
+    if (esp_timer_get_time() - genius_pending_since_ > 60000000 ||
+        (!config_sound && state != kDeviceStateIdle && state != kDeviceStateListening &&
+         state != kDeviceStateSpeaking && state != kDeviceStateNotifying)) {
+        CancelGeniusLifecycle("expired");
+        return;
+    }
+    if (state == kDeviceStateSpeaking || state == kDeviceStateNotifying ||
+        notify_player_.IsBusy() || !audio_service_.IsPlaybackIdle())
+        return;
+    if (protocol_ && protocol_->IsAudioChannelOpened())
+        protocol_->CloseAudioChannel();
+    if (state == kDeviceStateListening)
+        SetDeviceState(kDeviceStateIdle);
+    genius_current_url_ = std::move(genius_pending_url_);
+    genius_pending_url_.clear();
+    genius_current_title_ = std::move(genius_pending_title_);
+    genius_active_kind_ = genius_pending_kind_;
+    PublishGeniusLifecycle("starting");
+    StartNotification(genius_current_url_, {{0, genius_current_title_}}, false);
+    if (GetDeviceState() == kDeviceStateNotifying)
+        PublishGeniusLifecycle("playing");
+    else
+        FinishGeniusAlert(false);
+#endif
 }

@@ -1,0 +1,7 @@
+{
+    "target": "esp32s3",
+    "build_name": "df-k10",
+    "configs": [
+        "CONFIG_BOARD_TYPE_DF_K10=y"
+    ]
+}
