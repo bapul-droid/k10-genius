@@ -142,6 +142,12 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait,
+                                 uint32_t generation);
+    bool PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm, uint32_t generation,
+                                uint32_t playback_id = 0,
+                                uint32_t media_position_ms = 0);
+    uint32_t GetPlaybackGeneration();
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);

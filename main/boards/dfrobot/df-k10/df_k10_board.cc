@@ -127,10 +127,29 @@ private:
         iot_button_register_cb(btn_a, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
             auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting) {
+
+            if (app.IsGeniusMediaActive()) {
+                app.StopGeniusPlayback();
+                return;
+            }
+
+            auto state = app.GetDeviceState();
+
+            if (state == kDeviceStateStarting) {
                 self->EnterWifiConfigMode();
                 return;
             }
+
+            if (state == kDeviceStateIdle) {
+                auto codec = self->GetAudioCodec();
+                auto volume = codec->output_volume() - 10;
+                if (volume < 0) volume = 0;
+                codec->SetOutputVolume(volume);
+                self->GetDisplay()->ShowNotification(
+                    Lang::Strings::VOLUME + std::to_string(volume));
+                return;
+            }
+
             app.ToggleChatState();
         }, this);
         iot_button_register_cb(btn_a, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
@@ -146,7 +165,7 @@ private:
 
         // Button B
         button_config_t btn_b_config = {
-            .long_press_time = 1000,
+            .long_press_time = 3000,
             .short_press_time = 0
         };
         btn_b_driver_ = (button_driver_t*)calloc(1, sizeof(button_driver_t));
@@ -158,21 +177,35 @@ private:
         iot_button_register_cb(btn_b, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
             auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting) {
+
+            if (app.IsGeniusMediaActive()) {
+                app.StopGeniusPlayback();
+                return;
+            }
+
+            auto state = app.GetDeviceState();
+
+            if (state == kDeviceStateStarting) {
                 self->EnterWifiConfigMode();
                 return;
             }
+
+            if (state == kDeviceStateIdle) {
+                auto codec = self->GetAudioCodec();
+                auto volume = codec->output_volume() + 10;
+                if (volume > 100) volume = 100;
+                codec->SetOutputVolume(volume);
+                self->GetDisplay()->ShowNotification(
+                    Lang::Strings::VOLUME + std::to_string(volume));
+                return;
+            }
+
             app.ToggleChatState();
         }, this);
         iot_button_register_cb(btn_b, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
-            auto codec = self->GetAudioCodec();
-            auto volume = codec->output_volume() + 10;
-            if (volume > 100) {
-                volume = 100;
-            }
-            codec->SetOutputVolume(volume);
-            self->GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+            ESP_LOGI(TAG, "Button B long press: WiFi provisioning");
+            self->EnterWifiConfigMode();
         }, this);
     }
 

@@ -235,7 +235,7 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
-            if (audio_service_.IsPlaybackIdle()) {
+if (audio_service_.IsPlaybackIdle()) {
                 notify_player_.OnPlaybackDrained();
                 TryStartGeniusPlayback();
             }
@@ -1568,6 +1568,12 @@ bool Application::RequestGeniusAlert(const std::string& kind, const std::string&
         genius_speech_url_ = audio_url;
         genius_tts_id_.clear();
         genius_alert_deadline_ = esp_timer_get_time() + 60000000;
+
+        // K10 alarm: drive hardware output at full volume.
+        if (kind == "alarm") {
+            Board::GetInstance().GetAudioCodec()->SetOutputVolume(100);
+        }
+
         PublishGeniusLifecycle("takeover");
         TryStartGeniusPlayback();
     });
@@ -1616,6 +1622,14 @@ void Application::CancelGeniusLifecycle(const char* reason) {
     genius_priority_ = 0;
     genius_active_kind_.clear();
     PublishGeniusLifecycle(reason);
+#endif
+}
+bool Application::IsGeniusMediaActive() const {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    return genius_active_kind_ == "media" ||
+           genius_pending_kind_ == "media";
+#else
+    return false;
 #endif
 }
 void Application::StopGeniusPlayback() {

@@ -607,25 +607,79 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
 }
 
 bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
+    uint32_t generation;
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        generation = playback_generation_;
+    }
+    return PushPacketToDecodeQueue(std::move(packet), wait, generation);
+}
+
+bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait,
+                                           uint32_t generation) {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
-    const uint32_t generation = playback_generation_;
+
+    if (generation != playback_generation_ || service_stopped_.load()) {
+        return false;
+    }
+
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
             audio_queue_cv_.wait(lock, [this, generation]() {
-                return service_stopped_.load() || generation != playback_generation_ ||
+                return service_stopped_.load() ||
+                       generation != playback_generation_ ||
                        audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
             });
         } else {
             return false;
         }
     }
+
     if (service_stopped_.load() || generation != playback_generation_) {
         return false;
     }
+
     playback_drained_notified_ = false;
     audio_decode_queue_.push_back(std::move(packet));
     audio_queue_cv_.notify_all();
     return true;
+}
+
+bool AudioService::PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm,
+                                          uint32_t generation,
+                                          uint32_t playback_id,
+                                          uint32_t media_position_ms) {
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+
+    if (service_stopped_.load() || generation != playback_generation_) {
+        return false;
+    }
+
+    audio_queue_cv_.wait(lock, [this, generation]() {
+        return service_stopped_.load() ||
+               generation != playback_generation_ ||
+               audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+    });
+
+    if (service_stopped_.load() || generation != playback_generation_) {
+        return false;
+    }
+
+    AudioTask task;
+    task.type = kAudioTaskTypeDecodeToPlaybackQueue;
+    task.pcm = std::move(pcm);
+    task.playback_id = playback_id;
+    task.media_position_ms = media_position_ms;
+
+    playback_drained_notified_ = false;
+    audio_playback_queue_.push_back(std::move(task));
+    audio_queue_cv_.notify_all();
+    return true;
+}
+
+uint32_t AudioService::GetPlaybackGeneration() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return playback_generation_;
 }
 
 std::unique_ptr<AudioStreamPacket> AudioService::PopPacketFromSendQueue() {

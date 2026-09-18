@@ -119,6 +119,7 @@ public:
     void PlaySound(const std::string_view& sound);
     bool RequestGeniusPlayback(const std::string& url, const std::string& title = "Media");
     void StopGeniusPlayback();
+    bool IsGeniusMediaActive() const;
     bool RequestGeniusAlert(const std::string& kind, const std::string& text,
                             const std::string& audio_url = "");
     bool AcceptGeniusSpeech(const std::string& id, const std::string& url);
