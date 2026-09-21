@@ -107,6 +107,10 @@ void GeniusDeviceChannel::Start() {
         return;
     }
 
+    if (catalog_ready_ == nullptr) {
+        catalog_ready_ = xSemaphoreCreateBinary();
+    }
+
     running_ = true;
     auto result = xTaskCreate(
         [](void* arg) {
@@ -124,6 +128,17 @@ void GeniusDeviceChannel::Start() {
         running_ = false;
         ESP_LOGE(TAG, "Failed to create channel task");
     }
+}
+
+bool GeniusDeviceChannel::WaitForCatalog(uint32_t timeout_ms) {
+    if (catalog_registered_) {
+        return true;
+    }
+    if (catalog_ready_ == nullptr) {
+        return false;
+    }
+    return xSemaphoreTake(catalog_ready_, pdMS_TO_TICKS(timeout_ms)) == pdTRUE ||
+           catalog_registered_;
 }
 
 void GeniusDeviceChannel::Stop() {
@@ -411,6 +426,10 @@ void GeniusDeviceChannel::RegisterSkillCatalog(const cJSON* data) {
 
     catalog_registered_ = registered > 0;
     ESP_LOGI(TAG, "Registered %d Genius V2 skills as XiaoZhi MCP tools", registered);
+
+    if (catalog_registered_ && catalog_ready_ != nullptr) {
+        xSemaphoreGive(catalog_ready_);
+    }
 
     if (catalog_registered_) {
         // XiaoZhi MCP normally discovers tools at session startup. Tell the
