@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <memory>
 #include <string>
@@ -20,11 +20,15 @@ private:
     void HandleText(const char* data, size_t len);
 
     bool SendHello();
-    bool SendResult(
-        const std::string& command_id,
-        bool recognized,
-        bool accepted,
-        const std::string& error
+    bool SendHeartbeat();
+    bool SendResponse(
+        const std::string& request_id,
+        bool accepted
+    );
+    bool SendError(
+        const std::string& request_id,
+        const std::string& code,
+        const std::string& message
     );
 
     std::unique_ptr<WebSocket> websocket_;
