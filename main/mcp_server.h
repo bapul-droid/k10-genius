@@ -54,17 +54,17 @@ public:
 class PropertyList;
 
 // Pointer alternatives transfer ownership to McpTool::Call.
-using ReturnValue = std::variant<bool, int, std::string, cJSON*, ImageContent*>;
+using ReturnValue = std::variant<bool, int, double, std::string, cJSON*, ImageContent*>;
 using ToolResult = std::expected<ReturnValue, std::string>;
 using ToolCallback = std::function<ToolResult(const PropertyList&)>;
 
-enum PropertyType { kPropertyTypeBoolean, kPropertyTypeInteger, kPropertyTypeString };
+enum PropertyType { kPropertyTypeBoolean, kPropertyTypeInteger, kPropertyTypeNumber, kPropertyTypeString };
 
 class Property {
 private:
     std::string name_;
     PropertyType type_;
-    std::variant<bool, int, std::string> value_;
+    std::variant<bool, int, double, std::string> value_;
     bool has_default_value_;
     std::optional<int> min_value_;  // 新增：整数最小值
     std::optional<int> max_value_;  // 新增：整数最大值
@@ -139,7 +139,7 @@ public:
 
     // Validate a value against this property's constraints without setting it.
     // Returns empty string on success, or an error message on failure.
-    std::string Validate(const std::variant<bool, int, std::string>& val) const {
+    std::string Validate(const std::variant<bool, int, double, std::string>& val) const {
         if (type_ == kPropertyTypeInteger && std::holds_alternative<int>(val)) {
             int v = std::get<int>(val);
             if (min_value_.has_value() && v < min_value_.value()) {
@@ -191,6 +191,11 @@ public:
             }
             if (max_value_.has_value()) {
                 cJSON_AddNumberToObject(json.get(), "maximum", max_value_.value());
+            }
+        } else if (type_ == kPropertyTypeNumber) {
+            cJSON_AddStringToObject(json.get(), "type", "number");
+            if (has_default_value_) {
+                cJSON_AddNumberToObject(json.get(), "default", value<double>());
             }
         } else if (type_ == kPropertyTypeString) {
             cJSON_AddStringToObject(json.get(), "type", "string");
@@ -396,6 +401,9 @@ public:
             } else if (std::holds_alternative<int>(return_value)) {
                 cJSON_AddStringToObject(text.get(), "text",
                                         std::to_string(std::get<int>(return_value)).c_str());
+            } else if (std::holds_alternative<double>(return_value)) {
+                cJSON_AddStringToObject(text.get(), "text",
+                                        std::to_string(std::get<double>(return_value)).c_str());
             } else if (std::holds_alternative<cJSON*>(return_value)) {
                 CJsonStringUniquePtr json_str(cJSON_PrintUnformatted(owned_json.get()));
                 cJSON_AddStringToObject(text.get(), "text",
