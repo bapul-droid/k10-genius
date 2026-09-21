@@ -1,6 +1,7 @@
 #include "application.h"
 #ifdef CONFIG_GENIUS_DEVICE_CORE
 #include "genius/command_handler.h"
+#include "genius/device_channel.h"
 #include "genius/native_services.h"
 namespace {
 bool GeniusUrl(const std::string& url) {
@@ -403,7 +404,19 @@ void Application::ActivationTask() {
     // Check for new firmware version
     CheckNewVersion();
 
-    // Initialize the protocol
+    // Genius V2 owns the unified skill catalog.  Wait until the worker has
+    // registered it into the local MCP registry before the XiaoZhi protocol
+    // starts and performs its first tools/list discovery.
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    ESP_LOGI(TAG, "Waiting for Genius V2 skill catalog before XiaoZhi protocol startup");
+    if (GeniusDeviceChannel::GetInstance().WaitForCatalog(10000)) {
+        ESP_LOGI(TAG, "Genius V2 skill catalog ready; starting XiaoZhi protocol");
+    } else {
+        ESP_LOGW(TAG, "Genius V2 skill catalog not ready after timeout; starting with native tools");
+    }
+#endif
+
+    // Initialize the protocol only after the Genius catalog is ready.
     InitializeProtocol();
 
     // Signal completion to main loop
