@@ -6,8 +6,12 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <cstring>
+
+#include "application.h"
 #include "boards/common/board.h"
 #include "command_handler.h"
+#include "mcp_server.h"
 #include "system_info.h"
 
 namespace {
@@ -18,6 +22,7 @@ static const char* kUrl = "wss://genius.minjiai.my.id/device/ws";
 constexpr TickType_t kInitialDelay = pdMS_TO_TICKS(3000);
 constexpr TickType_t kLoopDelay = pdMS_TO_TICKS(1000);
 constexpr TickType_t kHeartbeatInterval = pdMS_TO_TICKS(30000);
+constexpr TickType_t kSkillTimeout = pdMS_TO_TICKS(15000);
 
 std::string JsonString(cJSON* root) {
     char* text = cJSON_PrintUnformatted(root);
@@ -27,6 +32,67 @@ std::string JsonString(cJSON* root) {
     std::string result(text);
     cJSON_free(text);
     return result;
+}
+
+bool IsRequired(const cJSON* required, const char* name) {
+    if (!cJSON_IsArray(required)) {
+        return false;
+    }
+    const cJSON* item = nullptr;
+    cJSON_ArrayForEach(item, required) {
+        if (cJSON_IsString(item) && strcmp(item->valuestring, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Property MakeProperty(const char* name, const cJSON* schema, bool required) {
+    auto type = cJSON_GetObjectItemCaseSensitive(schema, "type");
+    const char* type_name = cJSON_IsString(type) ? type->valuestring : "string";
+    auto default_value = cJSON_GetObjectItemCaseSensitive(schema, "default");
+
+    if (strcmp(type_name, "boolean") == 0) {
+        if (!required) {
+            return Property(name, kPropertyTypeBoolean,
+                            cJSON_IsBool(default_value) ? cJSON_IsTrue(default_value) : false);
+        }
+        return Property(name, kPropertyTypeBoolean);
+    }
+
+    if (strcmp(type_name, "integer") == 0) {
+        if (!required) {
+            return Property(name, kPropertyTypeInteger,
+                            cJSON_IsNumber(default_value) ? default_value->valueint : 0);
+        }
+        return Property(name, kPropertyTypeInteger);
+    }
+
+    if (strcmp(type_name, "number") == 0) {
+        if (!required) {
+            return Property(name, kPropertyTypeNumber,
+                            cJSON_IsNumber(default_value) ? default_value->valuedouble : 0.0);
+        }
+        return Property(name, kPropertyTypeNumber);
+    }
+
+    std::string fallback;
+    if (cJSON_IsString(default_value)) {
+        fallback = default_value->valuestring;
+    } else if (!required && strcmp(name, "location") == 0) {
+        // time.now has a server-side Jakarta default but no JSON-schema default.
+        fallback = "Jakarta";
+    }
+
+    Property property = required
+        ? Property(name, kPropertyTypeString)
+        : Property(name, kPropertyTypeString, fallback);
+
+    auto max_length = cJSON_GetObjectItemCaseSensitive(schema, "maxLength");
+    if (cJSON_IsNumber(max_length) && max_length->valueint > 0) {
+        property.SetMaxLength(static_cast<size_t>(max_length->valueint));
+    }
+    return property;
 }
 
 }  // namespace
@@ -209,14 +275,20 @@ void GeniusDeviceChannel::HandleText(const char* data, size_t len) {
 
     if (strcmp(type->valuestring, "event") == 0) {
         auto event = cJSON_GetObjectItemCaseSensitive(root, "event");
+        auto data_object = cJSON_GetObjectItemCaseSensitive(root, "data");
+
         if (cJSON_IsString(event) && strcmp(event->valuestring, "skill.catalog") == 0) {
-            auto data_object = cJSON_GetObjectItemCaseSensitive(root, "data");
             auto skills = cJSON_IsObject(data_object)
                 ? cJSON_GetObjectItemCaseSensitive(data_object, "skills")
                 : nullptr;
             ESP_LOGI(TAG, "Skill catalog received: %d skills",
                      cJSON_IsArray(skills) ? cJSON_GetArraySize(skills) : 0);
+            RegisterSkillCatalog(data_object);
+        } else if (cJSON_IsString(event) &&
+                   strcmp(event->valuestring, "skill.result") == 0) {
+            HandleSkillResult(data_object);
         }
+
         cJSON_Delete(root);
         return;
     }
@@ -239,8 +311,6 @@ void GeniusDeviceChannel::HandleText(const char* data, size_t len) {
     const std::string request_id = request_id_item->valuestring;
     const std::string command = command_item->valuestring;
 
-    // Adapt Device Protocol V1 command names to the existing proven K10
-    // command executor. This keeps playback/alarm hardware code untouched.
     cJSON* adapted = cJSON_CreateObject();
 
     if (command == "media.play_url") {
@@ -279,6 +349,235 @@ void GeniusDeviceChannel::HandleText(const char* data, size_t len) {
     }
 
     cJSON_Delete(root);
+}
+
+void GeniusDeviceChannel::RegisterSkillCatalog(const cJSON* data) {
+    if (catalog_registered_ || !cJSON_IsObject(data)) {
+        return;
+    }
+
+    auto skills = cJSON_GetObjectItemCaseSensitive(data, "skills");
+    if (!cJSON_IsArray(skills)) {
+        return;
+    }
+
+    int registered = 0;
+    const cJSON* skill = nullptr;
+    cJSON_ArrayForEach(skill, skills) {
+        auto name_item = cJSON_GetObjectItemCaseSensitive(skill, "name");
+        auto description_item = cJSON_GetObjectItemCaseSensitive(skill, "description");
+        auto input_schema = cJSON_GetObjectItemCaseSensitive(skill, "input_schema");
+
+        if (!cJSON_IsString(name_item) || !cJSON_IsObject(input_schema)) {
+            continue;
+        }
+
+        const std::string name = name_item->valuestring;
+        const std::string description = cJSON_IsString(description_item)
+            ? description_item->valuestring
+            : "Genius V2 skill";
+
+        PropertyList properties;
+        auto schema_properties = cJSON_GetObjectItemCaseSensitive(input_schema, "properties");
+        auto required = cJSON_GetObjectItemCaseSensitive(input_schema, "required");
+
+        if (cJSON_IsObject(schema_properties)) {
+            const cJSON* schema = nullptr;
+            cJSON_ArrayForEach(schema, schema_properties) {
+                if (schema->string == nullptr || !cJSON_IsObject(schema)) {
+                    continue;
+                }
+                properties.AddProperty(
+                    MakeProperty(schema->string, schema, IsRequired(required, schema->string))
+                );
+            }
+        }
+
+        McpServer::GetInstance().AddTool(
+            name,
+            description,
+            properties,
+            [this, name](const PropertyList& arguments) -> ToolResult {
+                std::string error;
+                auto result = CallSkill(name, arguments, error);
+                if (!error.empty()) {
+                    return std::unexpected(error);
+                }
+                return result;
+            }
+        );
+        ++registered;
+    }
+
+    catalog_registered_ = registered > 0;
+    ESP_LOGI(TAG, "Registered %d Genius V2 skills as XiaoZhi MCP tools", registered);
+
+    if (catalog_registered_) {
+        // XiaoZhi MCP normally discovers tools at session startup. Tell the
+        // connected client that the catalog grew after Genius V2 connected.
+        Application::GetInstance().SendMcpMessage(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}"
+        );
+    }
+}
+
+bool GeniusDeviceChannel::SendSkillCall(
+    const std::string& request_id,
+    const std::string& name,
+    const PropertyList& properties
+) {
+    if (websocket_ == nullptr || !connected_) {
+        return false;
+    }
+
+    const auto device_id = SystemInfo::GetMacAddress();
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "protocol", 1);
+    cJSON_AddStringToObject(root, "type", "event");
+    cJSON_AddStringToObject(root, "device_id", device_id.c_str());
+    cJSON_AddStringToObject(root, "event", "skill.call");
+
+    cJSON* data = cJSON_AddObjectToObject(root, "data");
+    cJSON_AddStringToObject(data, "request_id", request_id.c_str());
+    cJSON_AddStringToObject(data, "name", name.c_str());
+    cJSON* arguments = cJSON_AddObjectToObject(data, "arguments");
+
+    for (const auto& property : properties) {
+        if (property.type() == kPropertyTypeBoolean) {
+            cJSON_AddBoolToObject(arguments, property.name().c_str(), property.value<bool>());
+        } else if (property.type() == kPropertyTypeInteger) {
+            cJSON_AddNumberToObject(arguments, property.name().c_str(), property.value<int>());
+        } else if (property.type() == kPropertyTypeNumber) {
+            cJSON_AddNumberToObject(arguments, property.name().c_str(), property.value<double>());
+        } else if (property.type() == kPropertyTypeString) {
+            cJSON_AddStringToObject(
+                arguments,
+                property.name().c_str(),
+                property.value<std::string>().c_str()
+            );
+        }
+    }
+
+    auto text = JsonString(root);
+    cJSON_Delete(root);
+
+    return !text.empty() && websocket_->Send(text);
+}
+
+std::string GeniusDeviceChannel::CallSkill(
+    const std::string& name,
+    const PropertyList& properties,
+    std::string& error
+) {
+    if (!connected_) {
+        error = "Genius V2 is not connected";
+        return {};
+    }
+
+    auto pending = std::make_shared<PendingSkillCall>();
+    pending->done = xSemaphoreCreateBinary();
+    if (pending->done == nullptr) {
+        error = "Unable to allocate Genius skill wait handle";
+        return {};
+    }
+
+    const auto counter = ++skill_request_counter_;
+    const std::string request_id =
+        "k10-" + std::to_string(xTaskGetTickCount()) + "-" + std::to_string(counter);
+
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        if (pending_skill_call_ != nullptr) {
+            vSemaphoreDelete(pending->done);
+            error = "Another Genius skill call is still running";
+            return {};
+        }
+        pending_request_id_ = request_id;
+        pending_skill_call_ = pending;
+    }
+
+    ESP_LOGI(TAG, "Calling Genius skill: %s (%s)", name.c_str(), request_id.c_str());
+
+    if (!SendSkillCall(request_id, name, properties)) {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_request_id_.clear();
+        pending_skill_call_.reset();
+        vSemaphoreDelete(pending->done);
+        error = "Failed to send Genius skill call";
+        return {};
+    }
+
+    const bool completed = xSemaphoreTake(pending->done, kSkillTimeout) == pdTRUE;
+
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        if (pending_skill_call_ == pending) {
+            pending_request_id_.clear();
+            pending_skill_call_.reset();
+        }
+    }
+
+    vSemaphoreDelete(pending->done);
+    pending->done = nullptr;
+
+    if (!completed) {
+        error = "Genius skill call timed out";
+        return {};
+    }
+
+    if (!pending->error.empty()) {
+        error = pending->error;
+        return {};
+    }
+
+    return pending->result;
+}
+
+void GeniusDeviceChannel::HandleSkillResult(const cJSON* data) {
+    if (!cJSON_IsObject(data)) {
+        return;
+    }
+
+    auto request_id_item = cJSON_GetObjectItemCaseSensitive(data, "request_id");
+    auto ok_item = cJSON_GetObjectItemCaseSensitive(data, "ok");
+
+    if (!cJSON_IsString(request_id_item) || !cJSON_IsBool(ok_item)) {
+        return;
+    }
+
+    std::shared_ptr<PendingSkillCall> pending;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        if (pending_skill_call_ == nullptr ||
+            pending_request_id_ != request_id_item->valuestring) {
+            return;
+        }
+        pending = pending_skill_call_;
+    }
+
+    if (cJSON_IsTrue(ok_item)) {
+        auto result = cJSON_GetObjectItemCaseSensitive(data, "result");
+        if (cJSON_IsString(result)) {
+            pending->result = result->valuestring;
+        } else if (result != nullptr) {
+            char* encoded = cJSON_PrintUnformatted(result);
+            pending->result = encoded ? encoded : "";
+            cJSON_free(encoded);
+        } else {
+            pending->result = "ok";
+        }
+        ESP_LOGI(TAG, "Genius skill result: %s", request_id_item->valuestring);
+    } else {
+        auto error_item = cJSON_GetObjectItemCaseSensitive(data, "error");
+        pending->error = cJSON_IsString(error_item)
+            ? error_item->valuestring
+            : "Genius skill failed";
+        ESP_LOGW(TAG, "Genius skill error: %s: %s",
+                 request_id_item->valuestring, pending->error.c_str());
+    }
+
+    xSemaphoreGive(pending->done);
 }
 
 bool GeniusDeviceChannel::SendResponse(
