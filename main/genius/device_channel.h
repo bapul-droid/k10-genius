@@ -17,6 +17,7 @@ public:
     static GeniusDeviceChannel& GetInstance();
 
     void Start();
+    bool WaitForCatalog(uint32_t timeout_ms = 10000);
     void Stop();
 
 private:
@@ -61,6 +62,7 @@ private:
     bool running_ = false;
     bool connected_ = false;
     bool catalog_registered_ = false;
+    SemaphoreHandle_t catalog_ready_ = nullptr;
 
     std::atomic<uint32_t> skill_request_counter_{0};
     std::mutex pending_mutex_;
