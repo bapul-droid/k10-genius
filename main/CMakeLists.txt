@@ -1087,7 +1087,7 @@ if(CONFIG_GENIUS_DEVICE_CORE)
         "genius/media_decoder.cc"
         "genius/native_services.cc"
         "genius/command_handler.cc"
-        "genius/device_channel.cc"
+        "genius/genius_v2_client.cc"
     )
 endif()
 idf_component_register(SRCS ${SOURCES}

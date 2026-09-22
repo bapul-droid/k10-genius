@@ -12,9 +12,9 @@
 class PropertyList;
 struct cJSON;
 
-class GeniusDeviceChannel {
+class GeniusV2Client {
 public:
-    static GeniusDeviceChannel& GetInstance();
+    static GeniusV2Client& GetInstance();
 
     void Start();
     bool WaitForCatalog(uint32_t timeout_ms = 10000);
@@ -27,7 +27,7 @@ private:
         std::string error;
     };
 
-    GeniusDeviceChannel() = default;
+    GeniusV2Client() = default;
 
     void Run();
     bool Connect();

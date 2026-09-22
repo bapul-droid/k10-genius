@@ -1,7 +1,7 @@
 #include "application.h"
 #ifdef CONFIG_GENIUS_DEVICE_CORE
 #include "genius/command_handler.h"
-#include "genius/device_channel.h"
+#include "genius/genius_v2_client.h"
 #include "genius/native_services.h"
 namespace {
 bool GeniusUrl(const std::string& url) {
@@ -409,7 +409,7 @@ void Application::ActivationTask() {
     // starts and performs its first tools/list discovery.
 #ifdef CONFIG_GENIUS_DEVICE_CORE
     ESP_LOGI(TAG, "Waiting for Genius V2 skill catalog before XiaoZhi protocol startup");
-    if (GeniusDeviceChannel::GetInstance().WaitForCatalog(10000)) {
+    if (GeniusV2Client::GetInstance().WaitForCatalog(10000)) {
         ESP_LOGI(TAG, "Genius V2 skill catalog ready; starting XiaoZhi protocol");
     } else {
         ESP_LOGW(TAG, "Genius V2 skill catalog not ready after timeout; starting with native tools");

@@ -1,4 +1,4 @@
-#include "device_channel.h"
+#include "genius_v2_client.h"
 
 #include <cJSON.h>
 #include <esp_log.h>
@@ -16,7 +16,7 @@
 
 namespace {
 
-static const char* TAG = "GeniusDeviceChannel";
+static const char* TAG = "GeniusV2Client";
 static const char* kUrl = "wss://genius.minjiai.my.id/device/ws";
 
 constexpr TickType_t kInitialDelay = pdMS_TO_TICKS(3000);
@@ -97,12 +97,12 @@ Property MakeProperty(const char* name, const cJSON* schema, bool required) {
 
 }  // namespace
 
-GeniusDeviceChannel& GeniusDeviceChannel::GetInstance() {
-    static GeniusDeviceChannel instance;
+GeniusV2Client& GeniusV2Client::GetInstance() {
+    static GeniusV2Client instance;
     return instance;
 }
 
-void GeniusDeviceChannel::Start() {
+void GeniusV2Client::Start() {
     if (running_) {
         return;
     }
@@ -114,7 +114,7 @@ void GeniusDeviceChannel::Start() {
     running_ = true;
     auto result = xTaskCreate(
         [](void* arg) {
-            static_cast<GeniusDeviceChannel*>(arg)->Run();
+            static_cast<GeniusV2Client*>(arg)->Run();
             vTaskDelete(nullptr);
         },
         "genius_channel",
@@ -130,7 +130,7 @@ void GeniusDeviceChannel::Start() {
     }
 }
 
-bool GeniusDeviceChannel::WaitForCatalog(uint32_t timeout_ms) {
+bool GeniusV2Client::WaitForCatalog(uint32_t timeout_ms) {
     if (catalog_registered_) {
         return true;
     }
@@ -141,13 +141,13 @@ bool GeniusDeviceChannel::WaitForCatalog(uint32_t timeout_ms) {
            catalog_registered_;
 }
 
-void GeniusDeviceChannel::Stop() {
+void GeniusV2Client::Stop() {
     running_ = false;
     connected_ = false;
     websocket_.reset();
 }
 
-void GeniusDeviceChannel::Run() {
+void GeniusV2Client::Run() {
     ESP_LOGI(TAG, "Genius V2 channel task started");
     vTaskDelay(kInitialDelay);
 
@@ -182,7 +182,7 @@ void GeniusDeviceChannel::Run() {
     ESP_LOGI(TAG, "Genius V2 channel task stopped");
 }
 
-bool GeniusDeviceChannel::Connect() {
+bool GeniusV2Client::Connect() {
     websocket_.reset();
     connected_ = false;
 
@@ -230,7 +230,7 @@ bool GeniusDeviceChannel::Connect() {
     return true;
 }
 
-bool GeniusDeviceChannel::SendHello() {
+bool GeniusV2Client::SendHello() {
     if (websocket_ == nullptr || !connected_) {
         return false;
     }
@@ -254,7 +254,7 @@ bool GeniusDeviceChannel::SendHello() {
     return !text.empty() && websocket_->Send(text);
 }
 
-bool GeniusDeviceChannel::SendHeartbeat() {
+bool GeniusV2Client::SendHeartbeat() {
     if (websocket_ == nullptr || !connected_) {
         return false;
     }
@@ -272,7 +272,7 @@ bool GeniusDeviceChannel::SendHeartbeat() {
     return !text.empty() && websocket_->Send(text);
 }
 
-void GeniusDeviceChannel::HandleText(const char* data, size_t len) {
+void GeniusV2Client::HandleText(const char* data, size_t len) {
     cJSON* root = cJSON_ParseWithLength(data, len);
     if (root == nullptr) {
         ESP_LOGW(TAG, "Invalid JSON from Genius V2");
@@ -366,7 +366,7 @@ void GeniusDeviceChannel::HandleText(const char* data, size_t len) {
     cJSON_Delete(root);
 }
 
-void GeniusDeviceChannel::RegisterSkillCatalog(const cJSON* data) {
+void GeniusV2Client::RegisterSkillCatalog(const cJSON* data) {
     if (catalog_registered_ || !cJSON_IsObject(data)) {
         return;
     }
@@ -440,7 +440,7 @@ void GeniusDeviceChannel::RegisterSkillCatalog(const cJSON* data) {
     }
 }
 
-bool GeniusDeviceChannel::SendSkillCall(
+bool GeniusV2Client::SendSkillCall(
     const std::string& request_id,
     const std::string& name,
     const PropertyList& properties
@@ -484,7 +484,7 @@ bool GeniusDeviceChannel::SendSkillCall(
     return !text.empty() && websocket_->Send(text);
 }
 
-std::string GeniusDeviceChannel::CallSkill(
+std::string GeniusV2Client::CallSkill(
     const std::string& name,
     const PropertyList& properties,
     std::string& error
@@ -553,7 +553,7 @@ std::string GeniusDeviceChannel::CallSkill(
     return pending->result;
 }
 
-void GeniusDeviceChannel::HandleSkillResult(const cJSON* data) {
+void GeniusV2Client::HandleSkillResult(const cJSON* data) {
     if (!cJSON_IsObject(data)) {
         return;
     }
@@ -599,7 +599,7 @@ void GeniusDeviceChannel::HandleSkillResult(const cJSON* data) {
     xSemaphoreGive(pending->done);
 }
 
-bool GeniusDeviceChannel::SendResponse(
+bool GeniusV2Client::SendResponse(
     const std::string& request_id,
     bool accepted
 ) {
@@ -624,7 +624,7 @@ bool GeniusDeviceChannel::SendResponse(
     return !text.empty() && websocket_->Send(text);
 }
 
-bool GeniusDeviceChannel::SendError(
+bool GeniusV2Client::SendError(
     const std::string& request_id,
     const std::string& code,
     const std::string& message

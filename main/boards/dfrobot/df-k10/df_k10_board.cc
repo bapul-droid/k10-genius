@@ -1,6 +1,6 @@
 #include "genius/portal.h"
 #include "genius/native_services.h"
-#include "genius/device_channel.h"
+#include "genius/genius_v2_client.h"
 #include "wifi_board.h"
 #include "k10_audio_codec.h"
 #include "display/lcd_display.h"
@@ -313,7 +313,7 @@ public:
         WifiBoard::StartNetwork();
 #ifdef CONFIG_GENIUS_DEVICE_CORE
         GeniusNativeServices::GetInstance().Start();
-        GeniusDeviceChannel::GetInstance().Start();
+        GeniusV2Client::GetInstance().Start();
 #endif
     }
     virtual AudioCodec *GetAudioCodec() override {
