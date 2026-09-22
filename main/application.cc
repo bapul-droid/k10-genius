@@ -313,6 +313,13 @@ if (audio_service_.IsPlaybackIdle()) {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
+
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    // Genius V2 requires working DNS/TLS. Do not start it while the device
+    // is still in Wi-Fi provisioning or before the network has an IP.
+    GeniusV2Client::GetInstance().Start();
+#endif
+
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {

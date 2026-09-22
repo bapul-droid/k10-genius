@@ -313,7 +313,6 @@ public:
         WifiBoard::StartNetwork();
 #ifdef CONFIG_GENIUS_DEVICE_CORE
         GeniusNativeServices::GetInstance().Start();
-        GeniusV2Client::GetInstance().Start();
 #endif
     }
     virtual AudioCodec *GetAudioCodec() override {
