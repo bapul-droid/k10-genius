@@ -2,6 +2,7 @@
 
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_app_desc.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -13,11 +14,12 @@
 #include "command_handler.h"
 #include "mcp_server.h"
 #include "system_info.h"
+#include "settings.h"
 
 namespace {
 
 static const char* TAG = "GeniusV2Client";
-static const char* kUrl = "wss://genius.minjiai.my.id/device/ws";
+static const char* kDefaultDomain = "genius.minjiai.my.id";
 
 constexpr TickType_t kInitialDelay = pdMS_TO_TICKS(3000);
 constexpr TickType_t kLoopDelay = pdMS_TO_TICKS(1000);
@@ -207,8 +209,16 @@ bool GeniusV2Client::Connect() {
         connected_ = false;
     });
 
-    ESP_LOGI(TAG, "Connecting V2: %s", kUrl);
-    auto result = websocket_->Connect(kUrl);
+    Settings settings("genius");
+    std::string domain = settings.GetString("domain");
+    if (domain.empty()) {
+        domain = kDefaultDomain;
+    }
+
+    const std::string url = "wss://" + domain + "/device/ws";
+
+    ESP_LOGI(TAG, "Connecting V2: %s", url.c_str());
+    auto result = websocket_->Connect(url.c_str());
 
     if (!result) {
         ESP_LOGW(TAG, "Connect failed: %s", result.error().ToString().c_str());
@@ -241,11 +251,11 @@ bool GeniusV2Client::SendHello() {
     cJSON_AddNumberToObject(root, "protocol", 1);
     cJSON_AddStringToObject(root, "type", "hello");
     cJSON_AddStringToObject(root, "device_id", device_id.c_str());
-    cJSON_AddStringToObject(root, "name", "DFRobot K10");
+    cJSON_AddStringToObject(root, "name", BOARD_NAME);
 
     cJSON* metadata = cJSON_AddObjectToObject(root, "metadata");
-    cJSON_AddStringToObject(metadata, "board", "df-k10");
-    cJSON_AddStringToObject(metadata, "firmware", "2.5.0");
+    cJSON_AddStringToObject(metadata, "board", BOARD_TYPE);
+    cJSON_AddStringToObject(metadata, "firmware", esp_app_get_description()->version);
     cJSON_AddStringToObject(metadata, "genius", "v2");
 
     auto text = JsonString(root);
@@ -503,7 +513,7 @@ std::string GeniusV2Client::CallSkill(
 
     const auto counter = ++skill_request_counter_;
     const std::string request_id =
-        "k10-" + std::to_string(xTaskGetTickCount()) + "-" + std::to_string(counter);
+        "genius-" + std::to_string(xTaskGetTickCount()) + "-" + std::to_string(counter);
 
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
