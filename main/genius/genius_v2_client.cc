@@ -386,68 +386,93 @@ void GeniusV2Client::RegisterSkillCatalog(const cJSON* data) {
         return;
     }
 
-    int registered = 0;
+    // Genius V2 owns the unified skill catalog and all intent routing.
+    // XiaoZhi only sees one stable gateway tool regardless of how many
+    // internal Genius skills exist.
+    const cJSON* gateway = nullptr;
     const cJSON* skill = nullptr;
+
     cJSON_ArrayForEach(skill, skills) {
         auto name_item = cJSON_GetObjectItemCaseSensitive(skill, "name");
-        auto description_item = cJSON_GetObjectItemCaseSensitive(skill, "description");
-        auto input_schema = cJSON_GetObjectItemCaseSensitive(skill, "input_schema");
-
-        if (!cJSON_IsString(name_item) || !cJSON_IsObject(input_schema)) {
-            continue;
+        if (cJSON_IsString(name_item) &&
+            strcmp(name_item->valuestring, "genius_tool") == 0) {
+            gateway = skill;
+            break;
         }
-
-        const std::string name = name_item->valuestring;
-        const std::string description = cJSON_IsString(description_item)
-            ? description_item->valuestring
-            : "Genius V2 skill";
-
-        PropertyList properties;
-        auto schema_properties = cJSON_GetObjectItemCaseSensitive(input_schema, "properties");
-        auto required = cJSON_GetObjectItemCaseSensitive(input_schema, "required");
-
-        if (cJSON_IsObject(schema_properties)) {
-            const cJSON* schema = nullptr;
-            cJSON_ArrayForEach(schema, schema_properties) {
-                if (schema->string == nullptr || !cJSON_IsObject(schema)) {
-                    continue;
-                }
-                properties.AddProperty(
-                    MakeProperty(schema->string, schema, IsRequired(required, schema->string))
-                );
-            }
-        }
-
-        McpServer::GetInstance().AddTool(
-            name,
-            description,
-            properties,
-            [this, name](const PropertyList& arguments) -> ToolResult {
-                std::string error;
-                auto result = CallSkill(name, arguments, error);
-                if (!error.empty()) {
-                    return std::unexpected(error);
-                }
-                return result;
-            }
-        );
-        ++registered;
     }
 
-    catalog_registered_ = registered > 0;
-    ESP_LOGI(TAG, "Registered %d Genius V2 skills as XiaoZhi MCP tools", registered);
+    if (gateway == nullptr) {
+        ESP_LOGE(TAG, "Genius gateway tool not found in skill catalog");
+        return;
+    }
 
-    if (catalog_registered_ && catalog_ready_ != nullptr) {
+    auto description_item =
+        cJSON_GetObjectItemCaseSensitive(gateway, "description");
+    auto input_schema =
+        cJSON_GetObjectItemCaseSensitive(gateway, "input_schema");
+
+    if (!cJSON_IsObject(input_schema)) {
+        ESP_LOGE(TAG, "Genius gateway has invalid input schema");
+        return;
+    }
+
+    const std::string description = cJSON_IsString(description_item)
+        ? description_item->valuestring
+        : "Send a request to Genius V2";
+
+    PropertyList properties;
+    auto schema_properties =
+        cJSON_GetObjectItemCaseSensitive(input_schema, "properties");
+    auto required =
+        cJSON_GetObjectItemCaseSensitive(input_schema, "required");
+
+    if (cJSON_IsObject(schema_properties)) {
+        const cJSON* schema = nullptr;
+        cJSON_ArrayForEach(schema, schema_properties) {
+            if (schema->string == nullptr || !cJSON_IsObject(schema)) {
+                continue;
+            }
+
+            // device_id is injected by the Genius V2 WebSocket session.
+            // It must never be supplied by the XiaoZhi model.
+            if (strcmp(schema->string, "device_id") == 0) {
+                continue;
+            }
+
+            properties.AddProperty(
+                MakeProperty(
+                    schema->string,
+                    schema,
+                    IsRequired(required, schema->string)
+                )
+            );
+        }
+    }
+
+    McpServer::GetInstance().AddTool(
+        "genius_tool",
+        description,
+        properties,
+        [this](const PropertyList& arguments) -> ToolResult {
+            std::string error;
+            auto result = CallSkill("genius_tool", arguments, error);
+            if (!error.empty()) {
+                return std::unexpected(error);
+            }
+            return result;
+        }
+    );
+
+    catalog_registered_ = true;
+    ESP_LOGI(TAG, "Registered Genius gateway as XiaoZhi MCP tool");
+
+    if (catalog_ready_ != nullptr) {
         xSemaphoreGive(catalog_ready_);
     }
 
-    if (catalog_registered_) {
-        // XiaoZhi MCP normally discovers tools at session startup. Tell the
-        // connected client that the catalog grew after Genius V2 connected.
-        Application::GetInstance().SendMcpMessage(
-            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}"
-        );
-    }
+    Application::GetInstance().SendMcpMessage(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}"
+    );
 }
 
 bool GeniusV2Client::SendSkillCall(
