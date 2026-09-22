@@ -67,6 +67,50 @@ void WifiBoard::StartNetwork() {
         snprintf(hostname, sizeof(hostname), "%s-%02X%02X", config.ssid_prefix.c_str(), mac[4], mac[5]);
         config.station_hostname = hostname;
     }
+    config.provisioning_value_callback =
+        [](const std::string& key, const std::string& value) {
+            if (key != "genius_domain") {
+                return;
+            }
+
+            std::string domain = value;
+
+            // Trim whitespace.
+            const auto first = domain.find_first_not_of(" \t\r\n");
+            if (first == std::string::npos) {
+                domain.clear();
+            } else {
+                const auto last = domain.find_last_not_of(" \t\r\n");
+                domain = domain.substr(first, last - first + 1);
+            }
+
+            // Accept pasted URLs, but store host/domain only.
+            const std::string https_prefix = "https://";
+            const std::string wss_prefix = "wss://";
+
+            if (domain.rfind(https_prefix, 0) == 0) {
+                domain.erase(0, https_prefix.size());
+            } else if (domain.rfind(wss_prefix, 0) == 0) {
+                domain.erase(0, wss_prefix.size());
+            }
+
+            // GeniusV2Client owns the /device/ws endpoint.
+            const auto slash = domain.find('/');
+            if (slash != std::string::npos) {
+                domain.erase(slash);
+            }
+
+            if (domain.empty()) {
+                ESP_LOGW(TAG, "Ignoring empty Genius domain");
+                return;
+            }
+
+            Settings settings("genius", true);
+            settings.SetString("domain", domain);
+
+            ESP_LOGI(TAG, "Saved Genius domain: %s", domain.c_str());
+        };
+
     wifi_manager.Initialize(config);
 
     // Set unified event callback - forward to NetworkEvent with SSID data
