@@ -1691,6 +1691,12 @@ void Application::PublishGeniusLifecycle(const char* state) {
     }
     if (protocol_)
         protocol_->SendDeviceEvent(body);
+
+    GeniusV2Client::GetInstance().SendDeviceEvent(
+        "playback",
+        body
+    );
+
 #endif
 }
 void Application::FinishGeniusAlert(bool success) {

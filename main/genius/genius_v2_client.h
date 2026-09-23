@@ -20,6 +20,11 @@ public:
     bool WaitForCatalog(uint32_t timeout_ms = 10000);
     void Stop();
 
+    bool SendDeviceEvent(
+        const std::string& event,
+        const std::string& data_json
+    );
+
 private:
     struct PendingSkillCall {
         SemaphoreHandle_t done = nullptr;

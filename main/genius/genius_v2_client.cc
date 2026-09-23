@@ -264,6 +264,35 @@ bool GeniusV2Client::SendHello() {
     return !text.empty() && websocket_->Send(text);
 }
 
+bool GeniusV2Client::SendDeviceEvent(
+    const std::string& event,
+    const std::string& data_json
+) {
+    if (websocket_ == nullptr || !connected_ || event.empty()) {
+        return false;
+    }
+
+    cJSON* data = cJSON_Parse(data_json.c_str());
+    if (!cJSON_IsObject(data)) {
+        cJSON_Delete(data);
+        return false;
+    }
+
+    const auto device_id = SystemInfo::GetMacAddress();
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "protocol", 1);
+    cJSON_AddStringToObject(root, "type", "event");
+    cJSON_AddStringToObject(root, "device_id", device_id.c_str());
+    cJSON_AddStringToObject(root, "event", event.c_str());
+    cJSON_AddItemToObject(root, "data", data);
+
+    auto text = JsonString(root);
+    cJSON_Delete(root);
+
+    return !text.empty() && websocket_->Send(text);
+}
+
 bool GeniusV2Client::SendHeartbeat() {
     if (websocket_ == nullptr || !connected_) {
         return false;
