@@ -7,6 +7,7 @@
 #include "esp_lcd_ili9341.h"
 #include "led_control.h"
 #include "application.h"
+#include "mcp_server.h"
 #include "button.h"
 #include "config.h"
 #include "esp_video.h"
@@ -292,6 +293,18 @@ private:
     void InitializeIot() {
         led_strip_ = new CircularStrip(BUILTIN_LED_GPIO, 3);
         new LedStripControl(led_strip_);
+        auto& mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool(
+            "self.screen.set_brightness",
+            "Set screen brightness. 0 turns the screen backlight off; 1-100 turns it on.",
+            PropertyList({
+                Property("brightness", kPropertyTypeInteger, 0, 100)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int brightness = properties["brightness"].value<int>();
+                SetScreenBrightness(static_cast<uint8_t>(brightness));
+                return true;
+            });
     }
 
 public:
@@ -336,6 +349,15 @@ public:
         return camera_;
     }
 
+    void SetScreenBrightness(uint8_t brightness) {
+        ESP_ERROR_CHECK(IoExpanderSetLevel(
+            IO_EXPANDER_PIN_NUM_0,
+            brightness > 0 ? 1 : 0
+        ));
+        ESP_LOGI(TAG, "Screen backlight: %s (%u%%)",
+                 brightness > 0 ? "ON" : "OFF",
+                 (unsigned)brightness);
+    }
     virtual Display *GetDisplay() override {
         return display_;
     }
