@@ -30,7 +30,7 @@ namespace {
 constexpr int kHttpTimeoutMs = 5000;
 constexpr size_t kHttpReadBufferSize = 4096;
 constexpr uint32_t kNotifyTaskStackSize = 8192;
-constexpr uint32_t kProducerTaskStackSize = 6144;
+constexpr uint32_t kProducerTaskStackSize = 12288;
 constexpr size_t kStreamBufferSize = 128 * 1024;
 constexpr size_t kPrebufferBytes = 32 * 1024;
 constexpr int kHttpReconnectAttempts = 3;
