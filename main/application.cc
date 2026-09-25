@@ -1111,6 +1111,33 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 #endif
 }
 
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+void Application::SetK10Backlight(bool on) {
+    auto& board = Board::GetInstance();
+    board.SetScreenBrightness(on ? 100 : 0);
+}
+
+void Application::ArmK10LcdSleep() {
+    if (lcd_sleep_timer_handle_ == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            auto* app = static_cast<Application*>(arg);
+            app->Schedule([app]() {
+                if (app->GetDeviceState() == kDeviceStateIdle) {
+                    app->SetK10Backlight(false);
+                }
+            });
+        };
+        args.arg = this;
+        args.name = "k10_lcd_sleep";
+        ESP_ERROR_CHECK(esp_timer_create(&args, &lcd_sleep_timer_handle_));
+    }
+
+    esp_timer_stop(lcd_sleep_timer_handle_);
+    ESP_ERROR_CHECK(esp_timer_start_once(lcd_sleep_timer_handle_, 30LL * 1000 * 1000));
+}
+#endif
+
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
@@ -1122,6 +1149,18 @@ void Application::HandleStateChangedEvent() {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    if (new_state == kDeviceStateIdle) {
+        SetK10Backlight(true);
+        ArmK10LcdSleep();
+    } else {
+        if (lcd_sleep_timer_handle_ != nullptr) {
+            esp_timer_stop(lcd_sleep_timer_handle_);
+        }
+        SetK10Backlight(true);
+    }
+#endif
 
     switch (new_state) {
         case kDeviceStateUnknown:

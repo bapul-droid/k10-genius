@@ -145,6 +145,9 @@ private:
     std::unique_ptr<Protocol> protocol_;
     EventGroupHandle_t event_group_ = nullptr;
     esp_timer_handle_t clock_timer_handle_ = nullptr;
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    esp_timer_handle_t lcd_sleep_timer_handle_ = nullptr;
+#endif
     DeviceStateMachine state_machine_;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
@@ -186,6 +189,10 @@ private:
 
     // Event handlers
     void HandleStateChangedEvent();
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    void SetK10Backlight(bool on);
+    void ArmK10LcdSleep();
+#endif
     void HandleToggleChatEvent();
     void HandleStartListeningEvent();
     void HandleStopListeningEvent();
