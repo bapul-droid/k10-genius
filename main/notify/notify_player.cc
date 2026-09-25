@@ -23,7 +23,7 @@ extern const char genius_ews_end[] asm("_binary_ews_ogg_end");
 
 namespace {
 constexpr int kHttpTimeoutMs = 5000;
-constexpr size_t kHttpReadBufferSize = 1024;
+constexpr size_t kHttpReadBufferSize = 4096;
 constexpr uint32_t kNotifyTaskStackSize = 8192;
 constexpr UBaseType_t kNotifyTaskPriority = 2;
 const char* TAG = "NotifyPlayer";
