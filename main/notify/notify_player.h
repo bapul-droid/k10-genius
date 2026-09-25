@@ -3,6 +3,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/stream_buffer.h>
 
 #include <cstdint>
 #include <functional>
@@ -42,6 +43,8 @@ private:
     SubtitleCallback subtitle_callback_;
     FinishedCallback finished_callback_;
     TaskHandle_t task_handle_ = nullptr;
+    TaskHandle_t producer_task_handle_ = nullptr;
+    StreamBufferHandle_t stream_buffer_ = nullptr;
     uint32_t playback_id_ = 0;
     uint32_t last_playback_position_ms_ = 0;
     uint32_t underrun_count_ = 0;
@@ -54,9 +57,17 @@ private:
     bool stream_started_ = false;
     bool playback_drained_ = false;
     bool completion_reported_ = false;
+    bool producer_ready_ = false;
+    bool producer_done_ = false;
+    bool producer_failed_ = false;
+    std::string stream_mime_;
+    std::string resolved_audio_url_;
+    size_t icy_meta_interval_ = 0;
 
     static void WorkerEntry(void* arg);
+    static void ProducerEntry(void* arg);
     void WorkerTask();
+    void ProducerTask();
     bool IsCancelled(uint32_t playback_id) const;
     FinishedCallback CompleteLocked(uint32_t& playback_id);
 };
