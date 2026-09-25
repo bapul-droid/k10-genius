@@ -242,7 +242,8 @@ void NotifyPlayer::ProducerTask() {
         http->SetHeader("Accept-Encoding", "identity");
         if (delivered_bytes) http->SetHeader("Range", "bytes=" + std::to_string(delivered_bytes) + "-");
 
-        bool opened = http->Open("GET", current_url);
+        auto open_result = http->Open("GET", current_url);
+        bool opened = static_cast<bool>(open_result);
         for (int redirect = 0; redirect < 5 && opened && !IsCancelled(playback_id); ++redirect) {
             auto status = http->GetStatusCode();
             if (!status || (*status != 301 && *status != 302 && *status != 303 &&
@@ -264,10 +265,13 @@ void NotifyPlayer::ProducerTask() {
             if (!IsSupportedUrl(location)) { opened = false; break; }
             http->Close();
             current_url = std::move(location);
-            opened = http->Open("GET", current_url);
+            open_result = http->Open("GET", current_url);
+            opened = static_cast<bool>(open_result);
         }
-        auto status = opened ? http->GetStatusCode() : std::nullopt;
-        bool status_ok = status && *status >= 200 && *status < 300;
+        NetworkResult<int> status = opened
+            ? http->GetStatusCode()
+            : std::unexpected(NetworkError{});
+        bool status_ok = opened && status && *status >= 200 && *status < 300;
         if (delivered_bytes && status_ok && *status != 206) {
             ESP_LOGW(TAG, "Server does not support byte-range resume");
             status_ok = false;
