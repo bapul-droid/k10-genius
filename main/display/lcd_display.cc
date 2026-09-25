@@ -384,6 +384,33 @@ bool LcdDisplay::Lock(int timeout_ms) { return lvgl_port_lock(timeout_ms); }
 
 void LcdDisplay::Unlock() { lvgl_port_unlock(); }
 
+bool LcdDisplay::SetRotation(int degrees) {
+    lv_display_rotation_t rotation;
+
+    switch (degrees) {
+        case 0:
+            rotation = LV_DISPLAY_ROTATION_0;
+            break;
+        case 90:
+            rotation = LV_DISPLAY_ROTATION_90;
+            break;
+        case 180:
+            rotation = LV_DISPLAY_ROTATION_180;
+            break;
+        case 270:
+            rotation = LV_DISPLAY_ROTATION_270;
+            break;
+        default:
+            ESP_LOGW(TAG, "Unsupported rotation: %d", degrees);
+            return false;
+    }
+
+    DisplayLockGuard lock(this);
+    lv_display_set_rotation(display_, rotation);
+    ESP_LOGI(TAG, "Display rotation set to %d degrees", degrees);
+    return true;
+}
+
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
 void LcdDisplay::SetupUI() {
     // Prevent duplicate calls - if already called, return early
