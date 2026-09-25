@@ -2,12 +2,15 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <optional>
 #include <cstring>
 #include <memory>
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <freertos/stream_buffer.h>
+#include <freertos/idf_additions.h>
 
 #include "assets/lang_config.h"
 #include "board.h"
