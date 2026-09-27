@@ -55,6 +55,29 @@
 
 #define TAG "EspVideo"
 
+static void LogCameraControl(int fd, uint32_t id, const char* name) {
+    struct v4l2_queryctrl query = {};
+    query.id = id;
+    if (ioctl(fd, VIDIOC_QUERYCTRL, &query) != 0) {
+        ESP_LOGI(TAG, "Camera control %s: unsupported", name);
+        return;
+    }
+
+    struct v4l2_control current = {};
+    current.id = id;
+    int current_value = 0;
+    bool has_current = ioctl(fd, VIDIOC_G_CTRL, &current) == 0;
+    if (has_current) {
+        current_value = current.value;
+    }
+
+    ESP_LOGI(TAG,
+             "Camera control %s: min=%ld max=%ld step=%ld default=%ld current=%s%d flags=0x%08lx",
+             name, (long)query.minimum, (long)query.maximum, (long)query.step,
+             (long)query.default_value, has_current ? "" : "n/a:", current_value,
+             (unsigned long)query.flags);
+}
+
 #if CONFIG_XIAOZHI_CAMERA_MIRROR_CONFIGURED
 #if CONFIG_XIAOZHI_CAMERA_HMIRROR
 static constexpr bool kConfiguredHMirror = true;
@@ -169,6 +192,16 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
         video_fd_ = -1;
         return;
     }
+
+    ESP_LOGI(TAG, "Camera controls at boot:");
+    LogCameraControl(video_fd_, V4L2_CID_EXPOSURE, "EXPOSURE");
+    LogCameraControl(video_fd_, V4L2_CID_GAIN, "GAIN");
+    LogCameraControl(video_fd_, V4L2_CID_BRIGHTNESS, "BRIGHTNESS");
+    LogCameraControl(video_fd_, V4L2_CID_CONTRAST, "CONTRAST");
+    LogCameraControl(video_fd_, V4L2_CID_SATURATION, "SATURATION");
+#ifdef V4L2_CID_EXPOSURE_AUTO
+    LogCameraControl(video_fd_, V4L2_CID_EXPOSURE_AUTO, "EXPOSURE_AUTO");
+#endif
 
     ESP_LOGD(TAG,
              "VIDIOC_QUERYCAP: driver=%s, card=%s, bus_info=%s, version=0x%08lx, "
