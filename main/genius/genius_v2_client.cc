@@ -229,15 +229,6 @@ bool GeniusV2Client::Connect() {
     connected_ = true;
     ESP_LOGI(TAG, "Connected to Genius V2");
 
-    // Route camera explanations through the same Genius server selected during
-    // provisioning. XiaoZhi may later advertise its own vision capability, but
-    // Genius is the device control plane for Genius-enabled firmware.
-    if (auto camera = Board::GetInstance().GetCamera(); camera != nullptr) {
-        const std::string vision_url = "https://" + domain + "/api/vision/explain";
-        camera->SetExplainUrl(vision_url, "");
-        ESP_LOGI(TAG, "Camera vision routed to Genius V2: %s", vision_url.c_str());
-    }
-
     if (!SendHello()) {
         ESP_LOGW(TAG, "Failed to send V2 hello");
         connected_ = false;
