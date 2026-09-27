@@ -337,6 +337,15 @@ void McpServer::ParseMessage(const std::string& message, ResponseSender response
 }
 
 void McpServer::ParseCapabilities(const cJSON* capabilities) {
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    // Genius-enabled firmware owns the camera vision backend. GeniusV2Client
+    // installs the URL derived from the provisioned Genius domain before the
+    // XiaoZhi protocol starts. Do not let XiaoZhi's initialize capabilities
+    // replace it with api.xiaozhi.me.
+    if (cJSON_IsObject(cJSON_GetObjectItem(capabilities, "vision"))) {
+        ESP_LOGI(TAG, "Ignoring XiaoZhi vision capability; Genius V2 owns camera vision");
+    }
+#else
     auto vision = cJSON_GetObjectItem(capabilities, "vision");
     if (cJSON_IsObject(vision)) {
         auto url = cJSON_GetObjectItem(vision, "url");
@@ -353,6 +362,7 @@ void McpServer::ParseCapabilities(const cJSON* capabilities) {
             }
         }
     }
+#endif
 }
 
 void McpServer::ParseMessage(const cJSON* json, ResponseSender response_sender) {
