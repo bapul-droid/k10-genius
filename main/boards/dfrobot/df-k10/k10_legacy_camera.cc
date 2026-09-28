@@ -13,8 +13,12 @@ Camera* CreateK10LegacyCamera() {
     config.pin_pwdn = CAMERA_PIN_PWDN;
     config.pin_reset = CAMERA_PIN_RESET;
     config.pin_xclk = CAMERA_PIN_XCLK;
-    config.pin_sccb_sda = CAMERA_PIN_SIOD;
-    config.pin_sccb_scl = CAMERA_PIN_SIOC;
+    // K10 already owns I2C port 1 for the TCA9555 and sensors.
+    // esp32-camera can attach SCCB to that existing bus instead of trying
+    // to create a second master bus on the same controller.
+    config.pin_sccb_sda = -1;
+    config.pin_sccb_scl = -1;
+    config.sccb_i2c_port = 1;
 
     config.pin_d7 = CAMERA_PIN_D9;
     config.pin_d6 = CAMERA_PIN_D8;
