@@ -888,10 +888,15 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION AND NOT BOARD_TYPE MATCHES "^[a-z0-9.-]+$")
     )
 endif()
 
-file(GLOB BOARD_SOURCES CONFIGURE_DEPENDS
+file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/*.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/*.c
 )
+if(CONFIG_BOARD_TYPE_DF_K10)
+    list(APPEND BOARD_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/boards/dfrobot/df-k10/k10_legacy_camera.cc
+    )
+endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
 # Select one audio engine for each chip family
