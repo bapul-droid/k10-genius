@@ -32,15 +32,13 @@ Camera* CreateK10LegacyCamera() {
     config.pin_href = CAMERA_PIN_HREF;
     config.pin_pclk = CAMERA_PIN_PCLK;
 
-    // DFRobot's K10 camera stack defaults GC2145 XCLK to 10 MHz.
-    // 20 MHz probes correctly but produces severe horizontal frame corruption
-    // on this board with the esp32-camera DMA path.
+    // Match the DFRobot K10 GC2145 clock used by the verified camera path.
     config.xclk_freq_hz = 10000000;
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
 
-    // Match the DFRobot UNIHIKER K10 path that was physically verified
-    // indoors and outdoors on this board.
+    // Golden K10 camera baseline, physically verified indoors and outdoors:
+    // RGB565 QVGA, single framebuffer, non-continuous capture.
     config.pixel_format = PIXFORMAT_RGB565;
     config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 12;
