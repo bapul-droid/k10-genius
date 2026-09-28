@@ -32,7 +32,10 @@ Camera* CreateK10LegacyCamera() {
     config.pin_href = CAMERA_PIN_HREF;
     config.pin_pclk = CAMERA_PIN_PCLK;
 
-    config.xclk_freq_hz = XCLK_FREQ_HZ;
+    // DFRobot's K10 camera stack defaults GC2145 XCLK to 10 MHz.
+    // 20 MHz probes correctly but produces severe horizontal frame corruption
+    // on this board with the esp32-camera DMA path.
+    config.xclk_freq_hz = 10000000;
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
 
