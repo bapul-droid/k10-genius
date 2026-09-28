@@ -38,7 +38,7 @@ if(EXISTS "${GC2145_SETTINGS}")
     if(NOT GC2145_OLD_POS EQUAL -1)
         string(REPLACE "${GC2145_OLD}" "${GC2145_NEW}" GC2145_CONTENT "${GC2145_CONTENT}")
         file(WRITE "${GC2145_SETTINGS}" "${GC2145_CONTENT}")
-        message(STATUS "K10 GC2145 outdoor AEC patch applied")
+        message(STATUS "K10 GC2145 outdoor exposure ladder patch applied")
     elseif(NOT GC2145_PATCHED_POS EQUAL -1)
         message(STATUS "K10 GC2145 outdoor AEC patch already applied")
     else()
@@ -46,4 +46,52 @@ if(EXISTS "${GC2145_SETTINGS}")
     endif()
 else()
     message(FATAL_ERROR "GC2145 settings file not found: ${GC2145_SETTINGS}")
+endif()
+
+# Stage 2: use the proven GC2145 SVGA AEC profile used by Linux camera drivers.
+# Espressif's table exposes no runtime V4L2 AEC controls, so tune the sensor init table itself.
+file(READ "${GC2145_SETTINGS}" GC2145_CONTENT)
+
+set(GC2145_AEC_OLD [=[
+    {0xfe, 0x01},
+    {0x01, 0x04},
+    {0x02, 0x60},
+    {0x03, 0x02},
+    {0x04, 0x48},
+    {0x05, 0x18},
+    {0x06, 0x50},
+    {0x07, 0x10},
+    {0x08, 0x38},
+    {0x0a, 0x80},
+    {0x21, 0x04},
+    {0xfe, 0x00},
+]=])
+
+set(GC2145_AEC_NEW [=[
+    {0xfe, 0x01},
+    /* K10 outdoor AEC stage 2: GC2145 SVGA daylight profile */
+    {0x01, 0x04},
+    {0x02, 0x60},
+    {0x03, 0x02},
+    {0x04, 0x48},
+    {0x05, 0x18},
+    {0x06, 0x4c},
+    {0x07, 0x14},
+    {0x08, 0x36},
+    {0x0a, 0xc0},
+    {0x21, 0x14},
+    {0xfe, 0x00},
+]=])
+
+string(FIND "${GC2145_CONTENT}" "${GC2145_AEC_OLD}" GC2145_AEC_OLD_POS)
+string(FIND "${GC2145_CONTENT}" "K10 outdoor AEC stage 2" GC2145_AEC_PATCHED_POS)
+
+if(NOT GC2145_AEC_OLD_POS EQUAL -1)
+    string(REPLACE "${GC2145_AEC_OLD}" "${GC2145_AEC_NEW}" GC2145_CONTENT "${GC2145_CONTENT}")
+    file(WRITE "${GC2145_SETTINGS}" "${GC2145_CONTENT}")
+    message(STATUS "K10 GC2145 outdoor AEC stage 2 applied")
+elseif(NOT GC2145_AEC_PATCHED_POS EQUAL -1)
+    message(STATUS "K10 GC2145 outdoor AEC stage 2 already applied")
+else()
+    message(FATAL_ERROR "GC2145 SVGA AEC block changed upstream; refusing unsafe stage 2 patch")
 endif()
