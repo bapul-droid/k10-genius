@@ -95,3 +95,47 @@ elseif(NOT GC2145_AEC_PATCHED_POS EQUAL -1)
 else()
     message(FATAL_ERROR "GC2145 SVGA AEC block changed upstream; refusing unsafe stage 2 patch")
 endif()
+
+
+# Stage 4 diagnostic: log the GC2145's live exposure and gain after each Capture().
+# P0:03/04 are live exposure; P0:B1/B2 are analog/digital gain readbacks.
+set(GC2145_DRIVER "${CMAKE_SOURCE_DIR}/managed_components/espressif__esp_cam_sensor/sensors/gc2145/gc2145.c")
+if(EXISTS "${GC2145_DRIVER}")
+    file(READ "${GC2145_DRIVER}" GC2145_DRIVER_CONTENT)
+    set(GC2145_DIAG_NEEDLE [=[
+static esp_err_t gc2145_set_stream(esp_cam_sensor_device_t *dev, int enable)
+]=])
+    set(GC2145_DIAG_CODE [=[
+static void gc2145_log_live_exposure(esp_cam_sensor_device_t *dev)
+{
+    uint8_t exp_hi = 0, exp_lo = 0, again = 0, dgain = 0;
+    esp_err_t ret = gc2145_select_page(dev, 0x00);
+    ret |= gc2145_read(dev->sccb_handle, 0x03, &exp_hi);
+    ret |= gc2145_read(dev->sccb_handle, 0x04, &exp_lo);
+    ret |= gc2145_read(dev->sccb_handle, 0xb1, &again);
+    ret |= gc2145_read(dev->sccb_handle, 0xb2, &dgain);
+    if (ret == ESP_OK) {
+        uint16_t exposure = ((uint16_t)(exp_hi & 0x1f) << 8) | exp_lo;
+        ESP_LOGI(TAG, "K10 LIVE EXP=%u (0x%04x) AGAIN=0x%02x DGAIN=0x%02x",
+                 exposure, exposure, again, dgain);
+    } else {
+        ESP_LOGW(TAG, "K10 live exposure read failed: %s", esp_err_to_name(ret));
+    }
+}
+
+static esp_err_t gc2145_set_stream(esp_cam_sensor_device_t *dev, int enable)
+]=])
+    string(FIND "${GC2145_DRIVER_CONTENT}" "K10 LIVE EXP=" GC2145_DIAG_DONE)
+    string(FIND "${GC2145_DRIVER_CONTENT}" "${GC2145_DIAG_NEEDLE}" GC2145_DIAG_POS)
+    if(GC2145_DIAG_DONE EQUAL -1 AND NOT GC2145_DIAG_POS EQUAL -1)
+        string(REPLACE "${GC2145_DIAG_NEEDLE}" "${GC2145_DIAG_CODE}" GC2145_DRIVER_CONTENT "${GC2145_DRIVER_CONTENT}")
+        file(WRITE "${GC2145_DRIVER}" "${GC2145_DRIVER_CONTENT}")
+        message(STATUS "K10 GC2145 live exposure diagnostic helper applied")
+    elseif(NOT GC2145_DIAG_DONE EQUAL -1)
+        message(STATUS "K10 GC2145 live exposure diagnostic helper already applied")
+    else()
+        message(FATAL_ERROR "GC2145 driver changed upstream; refusing unsafe diagnostic patch")
+    endif()
+else()
+    message(FATAL_ERROR "GC2145 driver not found: ${GC2145_DRIVER}")
+endif()
