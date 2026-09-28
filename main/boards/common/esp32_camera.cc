@@ -31,6 +31,10 @@ static constexpr bool kConfiguredVFlip = false;
 #endif
 
 Esp32Camera::Esp32Camera(const camera_config_t& config) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    esp_camera_set_psram_mode(false);
+    ESP_LOGI(TAG, "K10 PSRAM DMA disabled for GC2145 RGB565 capture");
+#endif
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_camera_init failed with error 0x%x", err);
