@@ -372,6 +372,23 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
         return;
     }
 
+    // K10 GC2145 runtime diagnostic: apply the minimum AE target only after
+    // STREAMON, so later sensor/stream setup cannot overwrite this control.
+    {
+        struct v4l2_ext_control ae_ctrl = {};
+        struct v4l2_ext_controls ae_ctrls = {};
+        ae_ctrl.id = V4L2_CID_CAMERA_AE_LEVEL;
+        ae_ctrl.value = 0x2f;
+        ae_ctrls.ctrl_class = V4L2_CTRL_CLASS_CAMERA;
+        ae_ctrls.count = 1;
+        ae_ctrls.controls = &ae_ctrl;
+        if (ioctl(video_fd_, VIDIOC_S_EXT_CTRLS, &ae_ctrls) != 0) {
+            ESP_LOGE(TAG, "K10 post-STREAMON AE set failed, errno=%d(%s)", errno, strerror(errno));
+        } else {
+            ESP_LOGI(TAG, "K10 post-STREAMON AE target set to 0x%02x", ae_ctrl.value);
+        }
+    }
+
 #ifdef CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE
     // 当启用 ISP 时，ISP 需要一些照片来初始化参数，因此开启后后台拍摄5s照片并丢弃
     xTaskCreate(
