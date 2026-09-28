@@ -13,7 +13,6 @@
 #include "esp_imgfx_color_convert.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
-#include "esp_video_ioctl.h"
 #include "linux/videodev2.h"
 
 #include "board.h"
@@ -287,23 +286,6 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
         return;
     }
 
-    // K10 / GC2145 daylight experiment: use the sensor driver's native AE target
-    // instead of the generic V4L2_CID_EXPOSURE control.
-    {
-        struct v4l2_ext_control ae_ctrl = {};
-        struct v4l2_ext_controls ae_ctrls = {};
-        ae_ctrl.id = V4L2_CID_CAMERA_AE_LEVEL;
-        ae_ctrl.value = 0x2f;  // GC2145 driver's documented minimum AE target
-        ae_ctrls.ctrl_class = V4L2_CTRL_CLASS_CAMERA;
-        ae_ctrls.count = 1;
-        ae_ctrls.controls = &ae_ctrl;
-        if (ioctl(video_fd_, VIDIOC_S_EXT_CTRLS, &ae_ctrls) != 0) {
-            ESP_LOGE(TAG, "K10 GC2145 AE target set failed, errno=%d(%s)", errno, strerror(errno));
-        } else {
-            ESP_LOGI(TAG, "K10 GC2145 AE target set to 0x%02x", ae_ctrl.value);
-        }
-    }
-
 #if CONFIG_XIAOZHI_CAMERA_MIRROR_CONFIGURED
     SetHMirror(kConfiguredHMirror);
     SetVFlip(kConfiguredVFlip);
@@ -372,23 +354,6 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
         return;
     }
 
-    // K10 GC2145 runtime diagnostic: apply the minimum AE target only after
-    // STREAMON, so later sensor/stream setup cannot overwrite this control.
-    {
-        struct v4l2_ext_control ae_ctrl = {};
-        struct v4l2_ext_controls ae_ctrls = {};
-        ae_ctrl.id = V4L2_CID_CAMERA_AE_LEVEL;
-        ae_ctrl.value = 0x2f;
-        ae_ctrls.ctrl_class = V4L2_CTRL_CLASS_CAMERA;
-        ae_ctrls.count = 1;
-        ae_ctrls.controls = &ae_ctrl;
-        if (ioctl(video_fd_, VIDIOC_S_EXT_CTRLS, &ae_ctrls) != 0) {
-            ESP_LOGE(TAG, "K10 post-STREAMON AE set failed, errno=%d(%s)", errno, strerror(errno));
-        } else {
-            ESP_LOGI(TAG, "K10 post-STREAMON AE target set to 0x%02x", ae_ctrl.value);
-        }
-    }
-
 #ifdef CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE
     // 当启用 ISP 时，ISP 需要一些照片来初始化参数，因此开启后后台拍摄5s照片并丢弃
     xTaskCreate(
@@ -455,22 +420,6 @@ bool EspVideo::Capture() {
         ESP_LOGE(TAG, "Capture failed: camera did not initialize (streaming_on_=%d, video_fd_=%d)", streaming_on_,
                  video_fd_);
         return false;
-    }
-
-    // Read back the GC2145 AE target when a photo is captured. This remains visible
-    // in the normal photo log after reconnecting USB; no continuous serial monitor needed.
-    {
-        struct v4l2_ext_control ae_ctrl = {};
-        struct v4l2_ext_controls ae_ctrls = {};
-        ae_ctrl.id = V4L2_CID_CAMERA_AE_LEVEL;
-        ae_ctrls.ctrl_class = V4L2_CTRL_CLASS_CAMERA;
-        ae_ctrls.count = 1;
-        ae_ctrls.controls = &ae_ctrl;
-        if (ioctl(video_fd_, VIDIOC_G_EXT_CTRLS, &ae_ctrls) == 0) {
-            ESP_LOGI(TAG, "K10 PHOTO AE target=0x%02x", ae_ctrl.value);
-        } else {
-            ESP_LOGW(TAG, "K10 PHOTO AE readback failed, errno=%d(%s)", errno, strerror(errno));
-        }
     }
 
     for (int i = 0; i < 3; i++) {
