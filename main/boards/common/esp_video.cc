@@ -13,6 +13,7 @@
 #include "esp_imgfx_color_convert.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
+#include "esp_video_ioctl.h"
 #include "linux/videodev2.h"
 
 #include "board.h"
@@ -284,6 +285,23 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
         video_fd_ = -1;
         sensor_format_ = 0;
         return;
+    }
+
+    // K10 / GC2145 daylight experiment: use the sensor driver's native AE target
+    // instead of the generic V4L2_CID_EXPOSURE control.
+    {
+        struct v4l2_ext_control ae_ctrl = {};
+        struct v4l2_ext_controls ae_ctrls = {};
+        ae_ctrl.id = V4L2_CID_CAMERA_AE_LEVEL;
+        ae_ctrl.value = 0x2f;  // GC2145 driver's documented minimum AE target
+        ae_ctrls.ctrl_class = V4L2_CTRL_CLASS_CAMERA;
+        ae_ctrls.count = 1;
+        ae_ctrls.controls = &ae_ctrl;
+        if (ioctl(video_fd_, VIDIOC_S_EXT_CTRLS, &ae_ctrls) != 0) {
+            ESP_LOGE(TAG, "K10 GC2145 AE target set failed, errno=%d(%s)", errno, strerror(errno));
+        } else {
+            ESP_LOGI(TAG, "K10 GC2145 AE target set to 0x%02x", ae_ctrl.value);
+        }
     }
 
 #if CONFIG_XIAOZHI_CAMERA_MIRROR_CONFIGURED
