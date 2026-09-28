@@ -11,3 +11,6 @@ idf_build_set_property(MINIMAL_BUILD ON)
 
 set(PROJECT_VER "2.5.0")
 project(xiaozhi)
+
+# K10 GC2145 daylight exposure tuning (applied after managed components resolve).
+include(${CMAKE_SOURCE_DIR}/cmake/gc2145_outdoor_aec.cmake)
