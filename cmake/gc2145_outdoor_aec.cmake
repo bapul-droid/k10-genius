@@ -123,12 +123,46 @@ static void gc2145_log_live_exposure(esp_cam_sensor_device_t *dev)
     }
 }
 
+static void gc2145_exposure_diag_task(void *arg)
+{
+    esp_cam_sensor_device_t *dev = (esp_cam_sensor_device_t *)arg;
+    while (true) {
+        gc2145_log_live_exposure(dev);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
 static esp_err_t gc2145_set_stream(esp_cam_sensor_device_t *dev, int enable)
+]=])
+
+    set(GC2145_STREAM_OLD [=[
+    if (ret == ESP_OK) {
+        dev->stream_status = enable;
+    }
+    ESP_LOGD(TAG, "Stream=%d", enable);
+]=])
+    set(GC2145_STREAM_NEW [=[
+    if (ret == ESP_OK) {
+        dev->stream_status = enable;
+        if (enable) {
+            static bool diag_started = false;
+            if (!diag_started) {
+                diag_started = true;
+                xTaskCreate(gc2145_exposure_diag_task, "gc2145_exp_diag", 3072, dev, 3, NULL);
+            }
+        }
+    }
+    ESP_LOGD(TAG, "Stream=%d", enable);
 ]=])
     string(FIND "${GC2145_DRIVER_CONTENT}" "K10 LIVE EXP=" GC2145_DIAG_DONE)
     string(FIND "${GC2145_DRIVER_CONTENT}" "${GC2145_DIAG_NEEDLE}" GC2145_DIAG_POS)
     if(GC2145_DIAG_DONE EQUAL -1 AND NOT GC2145_DIAG_POS EQUAL -1)
         string(REPLACE "${GC2145_DIAG_NEEDLE}" "${GC2145_DIAG_CODE}" GC2145_DRIVER_CONTENT "${GC2145_DRIVER_CONTENT}")
+        string(FIND "${GC2145_DRIVER_CONTENT}" "${GC2145_STREAM_OLD}" GC2145_STREAM_POS)
+        if(GC2145_STREAM_POS EQUAL -1)
+            message(FATAL_ERROR "GC2145 stream block changed upstream; refusing incomplete diagnostic patch")
+        endif()
+        string(REPLACE "${GC2145_STREAM_OLD}" "${GC2145_STREAM_NEW}" GC2145_DRIVER_CONTENT "${GC2145_DRIVER_CONTENT}")
         file(WRITE "${GC2145_DRIVER}" "${GC2145_DRIVER_CONTENT}")
         message(STATUS "K10 GC2145 live exposure diagnostic helper applied")
     elseif(NOT GC2145_DIAG_DONE EQUAL -1)
