@@ -440,6 +440,22 @@ bool EspVideo::Capture() {
         return false;
     }
 
+    // Read back the GC2145 AE target when a photo is captured. This remains visible
+    // in the normal photo log after reconnecting USB; no continuous serial monitor needed.
+    {
+        struct v4l2_ext_control ae_ctrl = {};
+        struct v4l2_ext_controls ae_ctrls = {};
+        ae_ctrl.id = V4L2_CID_CAMERA_AE_LEVEL;
+        ae_ctrls.ctrl_class = V4L2_CTRL_CLASS_CAMERA;
+        ae_ctrls.count = 1;
+        ae_ctrls.controls = &ae_ctrl;
+        if (ioctl(video_fd_, VIDIOC_G_EXT_CTRLS, &ae_ctrls) == 0) {
+            ESP_LOGI(TAG, "K10 PHOTO AE target=0x%02x", ae_ctrl.value);
+        } else {
+            ESP_LOGW(TAG, "K10 PHOTO AE readback failed, errno=%d(%s)", errno, strerror(errno));
+        }
+    }
+
     for (int i = 0; i < 3; i++) {
         struct v4l2_buffer buf = {};
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
