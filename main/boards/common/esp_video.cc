@@ -24,6 +24,9 @@
 #include "lvgl_display.h"
 #include "mcp_server.h"
 #include "system_info.h"
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+#include "../dfrobot/df-k10/k10_legacy_camera.h"
+#endif
 
 #ifdef CONFIG_XIAOZHI_ENABLE_CAMERA_DEBUG_MODE
 #undef LOG_LOCAL_LEVEL
@@ -108,6 +111,11 @@ static void log_available_video_devices() {
 #endif  // CONFIG_XIAOZHI_ENABLE_CAMERA_DEBUG_MODE
 
 EspVideo::EspVideo(const esp_video_init_config_t& config) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    legacy_camera_ = CreateK10LegacyCamera();
+    ESP_LOGI(TAG, "K10 uses esp32-camera backend; esp-video bypassed");
+    return;
+#endif
     if (esp_video_init(&config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed");
         return;
@@ -389,6 +397,11 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
 }
 
 EspVideo::~EspVideo() {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    delete legacy_camera_;
+    legacy_camera_ = nullptr;
+    return;
+#endif
     if (streaming_on_ && video_fd_ >= 0) {
         int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         ioctl(video_fd_, VIDIOC_STREAMOFF, &type);
@@ -407,11 +420,18 @@ EspVideo::~EspVideo() {
 }
 
 void EspVideo::SetExplainUrl(const std::string& url, const std::string& token) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    if (legacy_camera_) legacy_camera_->SetExplainUrl(url, token);
+    return;
+#endif
     explain_url_ = url;
     explain_token_ = token;
 }
 
 bool EspVideo::Capture() {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    return legacy_camera_ ? legacy_camera_->Capture() : false;
+#endif
     if (encoder_thread_.joinable()) {
         encoder_thread_.join();
     }
@@ -889,6 +909,9 @@ bool EspVideo::Capture() {
 }
 
 bool EspVideo::SetHMirror(bool enabled) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    return legacy_camera_ ? legacy_camera_->SetHMirror(enabled) : false;
+#endif
     if (video_fd_ < 0)
         return false;
     struct v4l2_ext_controls ctrls = {};
@@ -906,6 +929,9 @@ bool EspVideo::SetHMirror(bool enabled) {
 }
 
 bool EspVideo::SetVFlip(bool enabled) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    return legacy_camera_ ? legacy_camera_->SetVFlip(enabled) : false;
+#endif
     if (video_fd_ < 0)
         return false;
     struct v4l2_ext_controls ctrls = {};
@@ -943,6 +969,10 @@ bool EspVideo::SetVFlip(bool enabled) {
  * @warning 如果摄像头缓冲区为空或网络连接失败，将返回错误信息
  */
 std::expected<std::string, std::string> EspVideo::Explain(const std::string& question) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    if (!legacy_camera_) return std::unexpected("K10 camera backend unavailable");
+    return legacy_camera_->Explain(question);
+#endif
     if (explain_url_.empty()) {
         return std::unexpected("Image explain URL or token is not set");
     }
