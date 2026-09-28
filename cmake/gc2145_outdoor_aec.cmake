@@ -95,3 +95,39 @@ elseif(NOT GC2145_AEC_PATCHED_POS EQUAL -1)
 else()
     message(FATAL_ERROR "GC2145 SVGA AEC block changed upstream; refusing unsafe stage 2 patch")
 endif()
+
+
+# Stage 5: force manual minimum exposure/gain.
+# Diagnostic only: if daylight is still white, AEC/AGC is not the root cause.
+file(READ "${GC2145_SETTINGS}" GC2145_CONTENT)
+set(GC2145_MANUAL_NEEDLE [=[
+    {0x0a, 0xc0},
+    {0x21, 0x14},
+    {0xfe, 0x00},
+};
+]=])
+set(GC2145_MANUAL_REPLACEMENT [=[
+    {0x0a, 0xc0},
+    {0x21, 0x14},
+    {0xfe, 0x00},
+
+    /* K10 diagnostic: disable AEC and force minimum exposure/gain */
+    {0xb6, 0x00},
+    {0x03, 0x00},
+    {0x04, 0x01},
+    {0xb0, 0x40},
+    {0xb1, 0x20},
+    {0xb2, 0x40},
+};
+]=])
+string(FIND "${GC2145_CONTENT}" "K10 diagnostic: disable AEC and force minimum exposure/gain" GC2145_MANUAL_DONE)
+string(FIND "${GC2145_CONTENT}" "${GC2145_MANUAL_NEEDLE}" GC2145_MANUAL_POS)
+if(NOT GC2145_MANUAL_DONE EQUAL -1)
+    message(STATUS "K10 GC2145 manual minimum exposure diagnostic already applied")
+elseif(NOT GC2145_MANUAL_POS EQUAL -1)
+    string(REPLACE "${GC2145_MANUAL_NEEDLE}" "${GC2145_MANUAL_REPLACEMENT}" GC2145_CONTENT "${GC2145_CONTENT}")
+    file(WRITE "${GC2145_SETTINGS}" "${GC2145_CONTENT}")
+    message(STATUS "K10 GC2145 manual minimum exposure diagnostic applied")
+else()
+    message(FATAL_ERROR "GC2145 final AEC block changed upstream; refusing unsafe manual exposure patch")
+endif()
