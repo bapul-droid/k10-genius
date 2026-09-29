@@ -349,7 +349,23 @@ void McpServer::ParseCapabilities(const cJSON* capabilities) {
                 if (cJSON_IsString(token)) {
                     token_str = std::string(token->valuestring);
                 }
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+                // K10 vision is resolved by Genius V2. Keep XiaoZhi's camera tool and
+                // conversational flow, but send the captured JPEG to Genius visual search
+                // instead of the upstream image-explain endpoint.
+                Settings genius_settings("genius");
+                std::string genius_domain = genius_settings.GetString("domain");
+                if (genius_domain.empty()) {
+                    genius_domain = "genius.minjiai.my.id";
+                }
+                const std::string genius_vision_url =
+                    "https://" + genius_domain + "/api/vision/search";
+                ESP_LOGI(TAG, "K10 camera vision routed to Genius: %s",
+                         genius_vision_url.c_str());
+                camera->SetExplainUrl(genius_vision_url, "");
+#else
                 camera->SetExplainUrl(url_str, token_str);
+#endif
             }
         }
     }
