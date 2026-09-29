@@ -27,13 +27,13 @@ extern const char genius_ews_end[] asm("_binary_ews_ogg_end");
 #endif
 
 namespace {
-constexpr int kHttpTimeoutMs = 5000;
+constexpr int kHttpTimeoutMs = 15000;
 constexpr size_t kHttpReadBufferSize = 4096;
 constexpr uint32_t kNotifyTaskStackSize = 8192;
 constexpr uint32_t kProducerTaskStackSize = 12288;
 constexpr size_t kStreamBufferSize = 128 * 1024;
 constexpr size_t kPrebufferBytes = 32 * 1024;
-constexpr int kHttpReconnectAttempts = 3;
+constexpr int kHttpReconnectAttempts = 0;
 constexpr UBaseType_t kNotifyTaskPriority = 2;
 const char* TAG = "NotifyPlayer";
 
@@ -397,8 +397,13 @@ void NotifyPlayer::WorkerTask() {
         }
         success = !packet_error && !IsCancelled(playback_id) && demuxer->Finish();
     } else {
-        stream_buffer_ = xStreamBufferCreateWithCaps(
-            kStreamBufferSize, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (stream_buffer_ == nullptr) {
+            stream_buffer_ = xStreamBufferCreateWithCaps(
+                kStreamBufferSize, 1,
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        } else {
+            xStreamBufferReset(stream_buffer_);
+        }
         if (!stream_buffer_) {
             ESP_LOGE(TAG, "Failed to allocate PSRAM media buffer");
             packet_error = true;
@@ -511,8 +516,9 @@ void NotifyPlayer::WorkerTask() {
                 }
             }
             while (producer_task_handle_ != nullptr) vTaskDelay(pdMS_TO_TICKS(10));
-            vStreamBufferDeleteWithCaps(stream_buffer_);
-            stream_buffer_ = nullptr;
+            if (stream_buffer_ != nullptr) {
+                xStreamBufferReset(stream_buffer_);
+            }
         }
     }
     FinishedCallback callback;
