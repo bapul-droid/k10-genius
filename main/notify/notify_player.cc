@@ -37,6 +37,13 @@ constexpr int kHttpReconnectAttempts = 0;
 constexpr UBaseType_t kNotifyTaskPriority = 2;
 const char* TAG = "NotifyPlayer";
 
+void LogInternalHeap(const char* stage) {
+    ESP_LOGI(TAG, "Media heap [%s]: internal_free=%u largest_internal=%u",
+             stage,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+}
+
 std::string_view BuiltinSound(const std::string& url) {
 #ifdef CONFIG_GENIUS_DEVICE_CORE
     if (url == "builtin:ews")
@@ -221,6 +228,7 @@ void NotifyPlayer::ProducerEntry(void* arg) {
 }
 
 void NotifyPlayer::ProducerTask() {
+    LogInternalHeap("producer start");
     std::string current_url;
     uint32_t playback_id = 0;
     {
@@ -334,12 +342,14 @@ void NotifyPlayer::ProducerTask() {
             failed = true; break;
         }
     }
+    LogInternalHeap("producer end");
     std::lock_guard<std::mutex> lock(mutex_);
     producer_done_ = true;
     producer_failed_ = failed && !cancelled_;
 }
 
 void NotifyPlayer::WorkerTask() {
+    LogInternalHeap("worker start");
     std::string audio_url;
     uint32_t playback_id = 0, generation = 0;
     {
@@ -418,6 +428,7 @@ void NotifyPlayer::WorkerTask() {
                 producer_done_ = true;
                 producer_failed_ = true;
             } else {
+                LogInternalHeap("producer task created");
                 while (!IsCancelled(playback_id)) {
                     bool ready, done, failed;
                     { std::lock_guard<std::mutex> lock(mutex_);
@@ -425,6 +436,7 @@ void NotifyPlayer::WorkerTask() {
                     auto buffered = xStreamBufferBytesAvailable(stream_buffer_);
                     if ((ready && buffered >= kPrebufferBytes) || (ready && done) || (done && failed)) {
                         ESP_LOGI(TAG, "Media prebuffer: %u bytes", static_cast<unsigned>(buffered));
+                        LogInternalHeap("prebuffer ready");
                         break;
                     }
                     vTaskDelay(pdMS_TO_TICKS(20));
