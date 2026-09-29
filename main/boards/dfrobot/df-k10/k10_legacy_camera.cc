@@ -33,20 +33,23 @@ Camera* CreateK10LegacyCamera() {
     config.pin_pclk = CAMERA_PIN_PCLK;
 
     // Match the DFRobot K10 GC2145 clock used by the verified camera path.
-    config.xclk_freq_hz = 10000000;
+    config.xclk_freq_hz = XCLK_FREQ_HZ;
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
 
     // Golden K10 camera baseline, physically verified indoors and outdoors:
-    // RGB565 QVGA, single framebuffer, non-continuous capture.
+    // RGB565 VGA matches DFRobot's original K10 camera geometry.  QVGA on the
+    // GC2145 uses a sensor sub-window and looks noticeably cropped/zoomed.
+    // Keep one framebuffer/non-continuous capture so the wider frame does not
+    // turn into a permanent memory cost.
     config.pixel_format = PIXFORMAT_RGB565;
-    config.frame_size = FRAMESIZE_QVGA;
+    config.frame_size = FRAMESIZE_VGA;
     config.jpeg_quality = 12;
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
-    ESP_LOGI(TAG, "Starting DFRobot-compatible esp32-camera backend: RGB565 QVGA");
+    ESP_LOGI(TAG, "Starting DFRobot-compatible esp32-camera backend: RGB565 VGA, XCLK=%d", XCLK_FREQ_HZ);
     auto* camera = new Esp32Camera(config);
     // GC2145 RGB565 data is byte-swapped before XiaoZhi preview/JPEG encoding.
     camera->SetSwapBytes(true);
