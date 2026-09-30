@@ -24,6 +24,8 @@ extern const char genius_ews_end[] asm("_binary_ews_ogg_end");
 namespace {
 constexpr int kHttpTimeoutMs = 5000;
 constexpr size_t kHttpReadBufferSize = 1024;
+constexpr int kGeniusMediaReconnects = 3;
+constexpr int kGeniusMediaReconnectDelayMs = 250;
 constexpr uint32_t kNotifyTaskStackSize = 8192;
 constexpr UBaseType_t kNotifyTaskPriority = 2;
 const char* TAG = "NotifyPlayer";
@@ -43,6 +45,11 @@ std::string_view BuiltinSound(const std::string& url) {
 bool IsSupportedUrl(const std::string& url) {
     return !BuiltinSound(url).empty() || url.compare(0, 7, "http://") == 0 ||
            url.compare(0, 8, "https://") == 0;
+}
+
+bool IsGeniusMediaUrl(const std::string& url) {
+    constexpr const char* kPrefix = "https://genius.minjiai.my.id/media/stream/";
+    return url.compare(0, strlen(kPrefix), kPrefix) == 0;
 }
 }  // namespace
 
@@ -205,6 +212,8 @@ void NotifyPlayer::WorkerTask() {
         generation = audio_generation_;
     }
     bool success = false;
+    const bool reconnectable_genius_media = IsGeniusMediaUrl(audio_url);
+    int reconnects_left = reconnectable_genius_media ? kGeniusMediaReconnects : 0;
     auto demuxer = std::make_unique<OggDemuxer>();
     uint32_t media_position_ms = 0;
     bool packet_error = false;
@@ -365,6 +374,51 @@ void NotifyPlayer::WorkerTask() {
                         auto size = http->Read(buffer.data(), buffer.size());
                         if (!size) {
                             ESP_LOGE(TAG, "Audio HTTP read failed");
+                            if (reconnects_left > 0 && !IsCancelled(playback_id)) {
+                                --reconnects_left;
+                                ESP_LOGW(TAG, "Genius media stream interrupted; reconnecting (%d left)",
+                                         reconnects_left);
+                                http->Close();
+                                vTaskDelay(pdMS_TO_TICKS(kGeniusMediaReconnectDelayMs));
+                                opened = http->Open("GET", audio_url);
+                                auto retry_status = opened ? http->GetStatusCode()
+                                                           : std::optional<int>{};
+                                if (opened && retry_status && *retry_status >= 200 &&
+                                    *retry_status < 300) {
+                                    // A reconnect starts a fresh Ogg logical stream. Reset the
+                                    // demuxer so headers are parsed from a clean boundary.
+                                    demuxer = std::make_unique<OggDemuxer>();
+                                    demuxer->OnPacket(
+                                        [this, playback_id, generation, &media_position_ms,
+                                         &packet_error](
+                                            const uint8_t* data, int sample_rate,
+                                            int frame_duration_ms, size_t packet_size) {
+                                            if (packet_error || IsCancelled(playback_id)) {
+                                                packet_error = true;
+                                                return;
+                                            }
+                                            auto packet = std::make_unique<AudioStreamPacket>();
+                                            packet->sample_rate = sample_rate;
+                                            packet->frame_duration = frame_duration_ms;
+                                            packet->playback_id = playback_id;
+                                            packet->media_position_ms = media_position_ms;
+                                            packet->payload.assign(data, data + packet_size);
+                                            if (!audio_service_.PushPacketToDecodeQueue(
+                                                    std::move(packet), true, generation)) {
+                                                packet_error = true;
+                                                return;
+                                            }
+                                            {
+                                                std::lock_guard<std::mutex> lock(mutex_);
+                                                stream_started_ = true;
+                                                playback_drained_ = false;
+                                            }
+                                            media_position_ms += frame_duration_ms;
+                                        });
+                                    ESP_LOGI(TAG, "Genius media stream reconnected");
+                                    continue;
+                                }
+                            }
                             break;
                         }
                         if (*size == 0) {
