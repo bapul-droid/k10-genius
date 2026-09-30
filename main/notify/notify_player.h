@@ -63,6 +63,7 @@ private:
     std::string stream_mime_;
     std::string resolved_audio_url_;
     size_t icy_meta_interval_ = 0;
+    uint32_t live_stream_generation_ = 0;
 
     static void WorkerEntry(void* arg);
     static void ProducerEntry(void* arg);
