@@ -423,8 +423,62 @@ void NotifyPlayer::WorkerTask() {
                         }
                         if (*size == 0) {
 #ifdef CONFIG_GENIUS_DEVICE_CORE
+                            // A Genius live-media response ending is a transient
+                            // transport boundary, not end-of-media. Reopen the
+                            // stable session URL and start a fresh Ogg demuxer.
+                            // esp_http_client can report a prematurely closed
+                            // chunked response as a clean zero-length Read(), so
+                            // handling only the null/error case misses exactly
+                            // the failure seen on K10.
+                            if (reconnects_left > 0 && reconnectable_genius_media &&
+                                !IsCancelled(playback_id)) {
+                                --reconnects_left;
+                                ESP_LOGW(TAG,
+                                         "Genius media response ended; reconnecting (%d left)",
+                                         reconnects_left);
+                                http->Close();
+                                vTaskDelay(pdMS_TO_TICKS(kGeniusMediaReconnectDelayMs));
+                                opened = http->Open("GET", audio_url);
+                                auto retry_status = opened ? http->GetStatusCode()
+                                                           : std::optional<int>{};
+                                if (opened && retry_status && *retry_status >= 200 &&
+                                    *retry_status < 300) {
+                                    demuxer = std::make_unique<OggDemuxer>();
+                                    demuxer->OnPacket(
+                                        [this, playback_id, generation, &media_position_ms,
+                                         &packet_error](
+                                            const uint8_t* data, int sample_rate,
+                                            int frame_duration_ms, size_t packet_size) {
+                                            if (packet_error || IsCancelled(playback_id)) {
+                                                packet_error = true;
+                                                return;
+                                            }
+                                            auto packet = std::make_unique<AudioStreamPacket>();
+                                            packet->sample_rate = sample_rate;
+                                            packet->frame_duration = frame_duration_ms;
+                                            packet->playback_id = playback_id;
+                                            packet->media_position_ms = media_position_ms;
+                                            packet->payload.assign(data, data + packet_size);
+                                            if (!audio_service_.PushPacketToDecodeQueue(
+                                                    std::move(packet), true, generation)) {
+                                                packet_error = true;
+                                                return;
+                                            }
+                                            {
+                                                std::lock_guard<std::mutex> lock(mutex_);
+                                                stream_started_ = true;
+                                                playback_drained_ = false;
+                                            }
+                                            media_position_ms += frame_duration_ms;
+                                        });
+                                    ESP_LOGI(TAG, "Genius media stream reconnected after EOF");
+                                    continue;
+                                }
+                                ESP_LOGW(TAG, "Genius media reconnect after EOF failed");
+                            }
                             success = identified && (ogg ? demuxer->Finish()
-                                                         : pcm_decoder->Process(nullptr, 0, true) &&
+                                                         : pcm_decoder &&
+                                                               pcm_decoder->Process(nullptr, 0, true) &&
                                                                pcm_decoder->samples() > 0);
 #else
                             success = demuxer->Finish();
