@@ -39,6 +39,7 @@ Current live-radio recovery commits:
 - `f7e0616` — reconnect marked Genius live radio streams.
 - `97ef1e3` — track live media stream generations.
 - `e426ff8` — reset Ogg demuxer across live radio reconnects.
+- `892297c` — reset live-radio retry budget after successful recovery.
 
 Board:
 DFRobot UNIHIKER K10
@@ -227,15 +228,40 @@ Switch:
 - LEFT = valid/active
 - RIGHT = invalid reading
 
-## Live-radio follow-up
+## Verified live-radio recovery
 
-Use the K10 behavior as the semantic reference, not as code to copy blindly:
+Minji now implements and has physically verified the same live-radio recovery semantics as K10:
 - Genius marker `?live=1`.
 - stable session URL reconnect.
-- bounded reconnect.
+- 3 consecutive reconnect failures maximum; successful live reads reset the retry budget.
 - playback lifecycle remains alive.
 - fresh Ogg demuxer per fresh logical stream.
 - finite media semantics remain unchanged.
+
+Relevant Minji commits:
+- `fdee8eb` — live radio recovery.
+- `947fb13` — live stream generation tracking.
+
+## MultiNet6 custom wake assets
+
+Verified Minji wake baseline:
+- model: MultiNet6 Chinese / `mn6_cn`
+- runtime model: `rnnt_ctc_1.0`
+- wake command: `min ji`
+- recognition duration: 3000 ms
+- sensitivity: 20 / runtime threshold `0.200000` (generator default)
+- repo-local binary path: `custom_assets/assets.bin`
+
+Build behavior:
+- Minji board config selects custom assets.
+- `main/CMakeLists.txt` forces repo-root `custom_assets/assets.bin` for `CONFIG_BOARD_TYPE_MINJI_S3_LCD`, preventing an old local sdkconfig from silently regenerating/flashing MultiNet5.
+- Missing custom Minji assets is a build error rather than a silent fallback.
+- `assets.bin` is local/generated and is not stored in Git; copy it separately to a fresh clone.
+
+Relevant commits:
+- `1b2df44` — select custom assets.
+- `1dd006a` — correct custom-assets path.
+- `aefb896` — always flash tested MultiNet6 assets for Minji.
 
 ---
 
