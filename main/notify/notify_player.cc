@@ -107,6 +107,7 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
         stream_mime_.clear();
         resolved_audio_url_.clear();
         icy_meta_interval_ = 0;
+        live_stream_generation_ = 0;
     }
 
     BaseType_t created = xTaskCreate(WorkerEntry, "notify_http", kNotifyTaskStackSize, this,
@@ -244,7 +245,7 @@ void NotifyPlayer::ProducerTask() {
     if (genius_live) {
         ESP_LOGI(TAG, "Genius live media reconnect enabled: %s", current_url.c_str());
     }
-    while (!IsCancelled(playback_id) && !eof) {
+    while (!IsCancelled(playback_id)) {
         auto* network = Board::GetInstance().GetNetwork();
         auto http = network ? network->CreateHttp(2) : nullptr;
         if (!http) { failed = true; break; }
@@ -332,7 +333,34 @@ void NotifyPlayer::ProducerTask() {
             }
         }
         http->Close();
-        if (IsCancelled(playback_id) || eof) break;
+        if (IsCancelled(playback_id)) break;
+
+        // A Genius live response is one Ogg logical stream.  Whether it ends
+        // with EOF or a transient read error, drain the old compressed bytes
+        // before reopening the stable session URL.  The worker observes the
+        // generation bump and creates a fresh Ogg demuxer for the new stream.
+        if (genius_live && (eof || read_failed)) {
+            if (reconnects++ < reconnect_limit) {
+                ESP_LOGW(TAG, "Genius live media %s; reconnect %d/%d",
+                         eof ? "ended" : "read failed", reconnects, reconnect_limit);
+                while (!IsCancelled(playback_id) &&
+                       xStreamBufferBytesAvailable(stream_buffer_) != 0) {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+                if (IsCancelled(playback_id)) break;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    ++live_stream_generation_;
+                }
+                eof = false;
+                vTaskDelay(pdMS_TO_TICKS(250 * reconnects));
+                continue;
+            }
+            failed = true;
+            break;
+        }
+
+        if (eof) break;
         if (read_failed) {
             size_t icy = 0;
             { std::lock_guard<std::mutex> lock(mutex_); icy = icy_meta_interval_; }
@@ -341,9 +369,8 @@ void NotifyPlayer::ProducerTask() {
                 failed = true; break;
             }
             if (reconnects++ < reconnect_limit) {
-                ESP_LOGW(TAG, "%s HTTP read failed; reconnect %d/%d",
-                         genius_live ? "Genius live media" : "Audio", reconnects,
-                         reconnect_limit);
+                ESP_LOGW(TAG, "Audio HTTP read failed; reconnect %d/%d",
+                         reconnects, reconnect_limit);
                 vTaskDelay(pdMS_TO_TICKS(250 * reconnects));
                 continue;
             }
@@ -368,39 +395,41 @@ void NotifyPlayer::WorkerTask() {
     auto demuxer = std::make_unique<OggDemuxer>();
     uint32_t media_position_ms = 0;
     bool packet_error = false;
-    demuxer->OnPacket(
-        [this, playback_id, generation, &media_position_ms, &packet_error](
-            const uint8_t* data, int sample_rate, int frame_duration_ms, size_t size) {
-            if (packet_error || IsCancelled(playback_id)) {
-                packet_error = true;
-                return;
-            }
-            auto packet = std::make_unique<AudioStreamPacket>();
-            packet->sample_rate = sample_rate;
-            packet->frame_duration = frame_duration_ms;
-            packet->playback_id = playback_id;
-            packet->media_position_ms = media_position_ms;
-            packet->payload.assign(data, data + size);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (cancelled_ || !active_ || playback_id != playback_id_) {
+    auto configure_demuxer = [&]() {
+        demuxer = std::make_unique<OggDemuxer>();
+        demuxer->OnPacket(
+            [this, playback_id, generation, &media_position_ms, &packet_error](
+                const uint8_t* data, int sample_rate, int frame_duration_ms, size_t size) {
+                if (packet_error || IsCancelled(playback_id)) {
                     packet_error = true;
                     return;
                 }
-                playback_drained_ = false;
-            }
-            // An old HTTP worker cannot inject audio after Stop/reset, even if it
-            // was waiting for queue space or a network read when cancellation ran.
-            if (!audio_service_.PushPacketToDecodeQueue(std::move(packet), true, generation)) {
-                packet_error = true;
-                return;
-            }
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                stream_started_ = true;
-            }
-            media_position_ms += frame_duration_ms;
-        });
+                auto packet = std::make_unique<AudioStreamPacket>();
+                packet->sample_rate = sample_rate;
+                packet->frame_duration = frame_duration_ms;
+                packet->playback_id = playback_id;
+                packet->media_position_ms = media_position_ms;
+                packet->payload.assign(data, data + size);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (cancelled_ || !active_ || playback_id != playback_id_) {
+                        packet_error = true;
+                        return;
+                    }
+                    playback_drained_ = false;
+                }
+                if (!audio_service_.PushPacketToDecodeQueue(std::move(packet), true, generation)) {
+                    packet_error = true;
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    stream_started_ = true;
+                }
+                media_position_ms += frame_duration_ms;
+            });
+    };
+    configure_demuxer();
     const auto builtin = BuiltinSound(audio_url);
     if (!builtin.empty()) {
         size_t offset = 0;
@@ -487,10 +516,22 @@ void NotifyPlayer::WorkerTask() {
                 };
 #endif
                 std::array<uint8_t, kHttpReadBufferSize> chunk;
+                uint32_t observed_live_generation = 0;
+                { std::lock_guard<std::mutex> lock(mutex_); observed_live_generation = live_stream_generation_; }
                 while (!packet_error && !IsCancelled(playback_id)) {
                     auto received = xStreamBufferReceive(stream_buffer_, chunk.data(), chunk.size(),
                                                          pdMS_TO_TICKS(100));
                     if (received) {
+                        uint32_t live_generation = 0;
+                        { std::lock_guard<std::mutex> lock(mutex_);
+                          live_generation = live_stream_generation_; }
+                        if (live_generation != observed_live_generation) {
+                            ESP_LOGI(TAG, "Genius live Ogg generation %lu -> %lu; reset demuxer",
+                                     static_cast<unsigned long>(observed_live_generation),
+                                     static_cast<unsigned long>(live_generation));
+                            configure_demuxer();
+                            observed_live_generation = live_generation;
+                        }
 #ifdef CONFIG_GENIUS_DEVICE_CORE
                         if (meta_interval) {
                             size_t offset = 0;
