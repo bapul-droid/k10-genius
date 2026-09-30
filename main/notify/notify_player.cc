@@ -49,7 +49,8 @@ bool IsSupportedUrl(const std::string& url) {
 
 bool IsGeniusMediaUrl(const std::string& url) {
     constexpr const char* kPrefix = "https://genius.minjiai.my.id/media/stream/";
-    return url.compare(0, strlen(kPrefix), kPrefix) == 0;
+    return url.compare(0, strlen(kPrefix), kPrefix) == 0 &&
+           url.find("live=1") != std::string::npos;
 }
 }  // namespace
 
@@ -214,6 +215,9 @@ void NotifyPlayer::WorkerTask() {
     bool success = false;
     const bool reconnectable_genius_media = IsGeniusMediaUrl(audio_url);
     int reconnects_left = reconnectable_genius_media ? kGeniusMediaReconnects : 0;
+    if (reconnectable_genius_media) {
+        ESP_LOGI(TAG, "Genius live media reconnect enabled: %s", audio_url.c_str());
+    }
     auto demuxer = std::make_unique<OggDemuxer>();
     uint32_t media_position_ms = 0;
     bool packet_error = false;
