@@ -34,6 +34,7 @@ constexpr uint32_t kProducerTaskStackSize = 12288;
 constexpr size_t kStreamBufferSize = 128 * 1024;
 constexpr size_t kPrebufferBytes = 32 * 1024;
 constexpr int kHttpReconnectAttempts = 0;
+constexpr int kGeniusLiveReconnectAttempts = 3;
 constexpr UBaseType_t kNotifyTaskPriority = 2;
 const char* TAG = "NotifyPlayer";
 
@@ -53,6 +54,12 @@ std::string_view BuiltinSound(const std::string& url) {
 bool IsSupportedUrl(const std::string& url) {
     return !BuiltinSound(url).empty() || url.compare(0, 7, "http://") == 0 ||
            url.compare(0, 8, "https://") == 0;
+}
+
+bool IsGeniusLiveMediaUrl(const std::string& url) {
+    constexpr const char* kPrefix = "https://genius.minjiai.my.id/media/stream/";
+    return url.compare(0, strlen(kPrefix), kPrefix) == 0 &&
+           url.find("live=1") != std::string::npos;
 }
 }  // namespace
 
@@ -229,9 +236,14 @@ void NotifyPlayer::ProducerTask() {
         current_url = audio_url_;
         playback_id = playback_id_;
     }
+    const bool genius_live = IsGeniusLiveMediaUrl(current_url);
     size_t delivered_bytes = 0;
     int reconnects = 0;
+    const int reconnect_limit = genius_live ? kGeniusLiveReconnectAttempts : kHttpReconnectAttempts;
     bool failed = false, eof = false;
+    if (genius_live) {
+        ESP_LOGI(TAG, "Genius live media reconnect enabled: %s", current_url.c_str());
+    }
     while (!IsCancelled(playback_id) && !eof) {
         auto* network = Board::GetInstance().GetNetwork();
         auto http = network ? network->CreateHttp(2) : nullptr;
@@ -241,7 +253,8 @@ void NotifyPlayer::ProducerTask() {
         http->SetHeader("Accept", "audio/ogg, audio/mpeg, audio/aac, audio/wav");
         http->SetHeader("Icy-MetaData", "0");
         http->SetHeader("Accept-Encoding", "identity");
-        if (delivered_bytes) http->SetHeader("Range", "bytes=" + std::to_string(delivered_bytes) + "-");
+        if (delivered_bytes && !genius_live)
+            http->SetHeader("Range", "bytes=" + std::to_string(delivered_bytes) + "-");
 
         auto open_result = http->Open("GET", current_url);
         bool opened = static_cast<bool>(open_result);
@@ -273,14 +286,15 @@ void NotifyPlayer::ProducerTask() {
             ? http->GetStatusCode()
             : std::unexpected(NetworkError{});
         bool status_ok = opened && status && *status >= 200 && *status < 300;
-        if (delivered_bytes && status_ok && *status != 206) {
+        if (delivered_bytes && !genius_live && status_ok && *status != 206) {
             ESP_LOGW(TAG, "Server does not support byte-range resume");
             status_ok = false;
         }
         if (!opened || !status_ok) {
             http->Close();
-            if (reconnects++ < kHttpReconnectAttempts) {
-                ESP_LOGW(TAG, "Audio HTTP reconnect %d/%d", reconnects, kHttpReconnectAttempts);
+            if (reconnects++ < reconnect_limit) {
+                ESP_LOGW(TAG, "%s HTTP reconnect %d/%d", genius_live ? "Genius live media" : "Audio",
+                         reconnects, reconnect_limit);
                 vTaskDelay(pdMS_TO_TICKS(250 * reconnects));
                 continue;
             }
@@ -326,9 +340,10 @@ void NotifyPlayer::ProducerTask() {
                 ESP_LOGW(TAG, "ICY read failed; safe range resume unavailable");
                 failed = true; break;
             }
-            if (reconnects++ < kHttpReconnectAttempts) {
-                ESP_LOGW(TAG, "Audio HTTP read failed; reconnect %d/%d", reconnects,
-                         kHttpReconnectAttempts);
+            if (reconnects++ < reconnect_limit) {
+                ESP_LOGW(TAG, "%s HTTP read failed; reconnect %d/%d",
+                         genius_live ? "Genius live media" : "Audio", reconnects,
+                         reconnect_limit);
                 vTaskDelay(pdMS_TO_TICKS(250 * reconnects));
                 continue;
             }
