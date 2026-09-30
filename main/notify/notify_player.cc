@@ -323,6 +323,13 @@ void NotifyPlayer::ProducerTask() {
             auto size = http->Read(buffer.data(), buffer.size());
             if (!size) { read_failed = true; break; }
             if (*size == 0) { eof = true; break; }
+            // A successful live read proves the new connection is healthy.
+            // Reconnect budget is consecutive-failure protection, not a lifetime
+            // quota for a long-running radio session.
+            if (genius_live && reconnects != 0) {
+                ESP_LOGI(TAG, "Genius live media recovered; reset reconnect counter");
+                reconnects = 0;
+            }
             size_t offset = 0;
             while (offset < static_cast<size_t>(*size) && !IsCancelled(playback_id)) {
                 auto sent = xStreamBufferSend(stream_buffer_, buffer.data() + offset,
