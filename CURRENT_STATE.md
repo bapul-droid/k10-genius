@@ -85,7 +85,7 @@ Current active branch uses the Lily-derived split network/playback architecture:
 - Finite media retains byte-range resume semantics.
 - Genius live radio is identified only by the stable Genius media URL carrying `?live=1`.
 - Live radio never uses Range resume.
-- Live reconnect is bounded to 3 attempts.
+- Live reconnect is bounded to 3 consecutive attempts; a successful live read resets the retry budget.
 
 ### Live-radio recovery — verified 2026-09-30
 
@@ -104,6 +104,7 @@ Relevant active-branch commits:
 - `f7e0616` — reconnect marked Genius live radio streams.
 - `97ef1e3` — track live media stream generations.
 - `e426ff8` — reset Ogg demuxer across live radio reconnects.
+- `892297c` — reset live-radio retry budget after successful recovery.
 
 Real-device validation:
 - JAK FM started normally with ~35 KB prebuffer.
@@ -330,20 +331,46 @@ Historical issues worth remembering:
 - heartbeat / ADC battery telemetry
 - watchdog/crash reporting
 
-## Minji live-radio follow-up
+## Minji live radio — verified 2026-09-30
 
-Minji has shown the same user-visible symptom as K10: radio audio stops while Minji itself remains alive.
+The proven K10 live-radio recovery semantics were transplanted into Minji's matching NotifyPlayer architecture.
 
-Next device-side task:
-- inspect Minji's current player implementation;
-- recognize Genius live media via `?live=1`;
-- reconnect the same stable Genius session URL on transient read failure/end;
-- keep the playback lifecycle alive while reconnecting;
-- reset/recreate Ogg demuxing for each fresh logical stream;
-- use bounded reconnect attempts;
-- preserve finite-media behavior.
+Verified on the physical Minji with JAK FM:
+- Genius live URL recognized via `?live=1`.
+- HTTP/TLS failure produced `Genius live media read failed; reconnect 1/3`.
+- A new HTTPS connection was established.
+- Successful bytes produced `Genius live media recovered; reset reconnect counter`.
+- Ogg generation advanced `1 -> 2` and the worker reset the demuxer.
+- Radio continued playing after recovery.
+- Free SRAM returned around 71 KiB after recovery; recorded minimum remained 33,468 bytes.
+- Treat Minji live-radio recovery as verified at the same semantic level as K10.
 
-Do not copy the K10 implementation blindly because Minji's player/task/buffer architecture may differ.
+Relevant Minji commits:
+- `fdee8eb` — recover Genius live radio streams.
+- `947fb13` — track live radio stream generations.
+
+## Minji MultiNet6 wake assets — verified 2026-09-30
+
+Minji now uses generated custom MultiNet6 Chinese assets instead of the default MultiNet5 assets.
+
+Verified boot state:
+- `Quantized MultiNet6:rnnt_ctc_1.0, name:mn6_cn`
+- wake command: `min ji`
+- recognition duration: 3000 ms
+- sensitivity threshold: 20 / runtime `0.200000` (generator default)
+
+The earlier threshold 15 / `0.150000` was more sensitive and produced false wakes while radio was playing. Baseline is now restored to generator default 20 and should be tuned only from real-device evidence.
+
+Persistent build rule:
+- Tested binary lives locally at repo-root `custom_assets/assets.bin`.
+- Minji CMake explicitly flashes that file for `CONFIG_BOARD_TYPE_MINJI_S3_LCD`, overriding stale `FLASH_DEFAULT_ASSETS` selections during ordinary `idf.py build flash`.
+- Build must fail loudly if the tested Minji assets file is absent; it must not silently fall back to MultiNet5.
+- The binary itself is intentionally not stored in Git; a fresh clone/machine must receive the tested `custom_assets/assets.bin` separately.
+
+Relevant Minji commits:
+- `1b2df44` — select custom MultiNet6 assets in Minji board config.
+- `1dd006a` — correct repo-root custom-assets relative path.
+- `aefb896` — force tested Minji MultiNet6 assets in ordinary build/flash.
 
 ---
 
@@ -405,10 +432,11 @@ K10:
 4. Keep ESP-Claw experimental unless explicitly promoted.
 
 Minji:
-1. Port the proven K10 live-radio recovery semantics after inspecting Minji's current player.
-2. Preserve working LCD/audio/wake/device-core behavior.
-3. Continue battery discharge characterization when relevant.
-4. Do not mix Minji hardware with the separate XiaoZhi VN CAM device.
+1. Preserve the now-verified live-radio recovery behavior.
+2. Keep MultiNet6 `mn6_cn` custom assets at threshold 20 as the wake baseline; observe false wakes before further tuning.
+3. Preserve working LCD/audio/wake/device-core behavior.
+4. Continue battery discharge characterization when relevant.
+5. Do not mix Minji hardware with the separate XiaoZhi VN CAM device.
 
 ---
 
