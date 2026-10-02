@@ -385,8 +385,10 @@ void NotifyPlayer::WorkerTask() {
                                 http->Close();
                                 vTaskDelay(pdMS_TO_TICKS(kGeniusMediaReconnectDelayMs));
                                 opened = http->Open("GET", audio_url);
-                                auto retry_status = opened ? http->GetStatusCode()
-                                                           : std::optional<int>{};
+                                auto retry_code = http->GetStatusCode();
+                                auto retry_status = (opened && retry_code)
+                                                        ? std::optional<int>(*retry_code)
+                                                        : std::optional<int>{};
                                 if (opened && retry_status && *retry_status >= 200 &&
                                     *retry_status < 300) {
                                     // A reconnect starts a fresh Ogg logical stream. Reset the
@@ -443,8 +445,10 @@ void NotifyPlayer::WorkerTask() {
                                 http->Close();
                                 vTaskDelay(pdMS_TO_TICKS(kGeniusMediaReconnectDelayMs));
                                 opened = http->Open("GET", audio_url);
-                                auto retry_status = opened ? http->GetStatusCode()
-                                                           : std::optional<int>{};
+                                auto retry_code = http->GetStatusCode();
+                                auto retry_status = (opened && retry_code)
+                                                        ? std::optional<int>(*retry_code)
+                                                        : std::optional<int>{};
                                 if (opened && retry_status && *retry_status >= 200 &&
                                     *retry_status < 300) {
                                     demuxer = std::make_unique<OggDemuxer>();
