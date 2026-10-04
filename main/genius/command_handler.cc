@@ -39,7 +39,7 @@ GeniusCommandResult DispatchGeniusCommand(const cJSON* command) {
         }
         if (!id.empty())
             result.accepted = app.AcceptGeniusSpeech(id, url);
-        else if (kind == "media")
+        else if (kind == "media" || kind == "radio" || kind == "music")
             result.accepted = app.RequestGeniusPlayback(url, title);
         else if (kind == "alarm")
             result.accepted = app.RequestGeniusAlert("alarm", text.empty() ? title : text);
