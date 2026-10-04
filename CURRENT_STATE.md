@@ -1,6 +1,6 @@
 # ESP32 PROJECT — CURRENT_STATE
 
-Last updated: 2026-09-30
+Last updated: 2026-10-04
 Scope: Hardware + firmware ESP32 devices only.
 Primary devices covered now: DFRobot K10 and Minji ESP32-S3.
 
@@ -37,14 +37,15 @@ Those belong to the separate Genius project.
 
 Device family: DFRobot UNIHIKER K10
 Main repo: `bapul-droid/k10-genius`
-Active branch: `feature/k10-lcd-auto-sleep`
+Active branch: `fix/k10-stable-camera-autosleep-media`
+Current HEAD before this diary update: `38990c8` — `fix(k10): accept radio/music kinds on stable device baseline`
 
 Historical checkpoint:
 - `80eddba` — `feat(genius): report playback lifecycle to v2 server` (2026-09-23) on the older `genius-v2-migration` line.
 
 Important:
 - Do not assume `genius-v2-migration` is the currently flashed branch.
-- The active/tested branch on 2026-09-30 is `feature/k10-lcd-auto-sleep`.
+- The active/tested branch on 2026-10-04 is `fix/k10-stable-camera-autosleep-media`.
 
 ## Firmware baseline
 
@@ -118,20 +119,34 @@ Real-device validation:
 Conclusion:
 The Lily-style producer reconnect pattern is valid for K10 when combined with an explicit fresh-Ogg generation boundary. Preserve this behavior unless later evidence shows a regression.
 
-## Camera — latest important state
+## Camera — verified stable path 2026-10-04
 
-Camera work became a dedicated K10 experiment after severe outdoor overexposure.
+Current physical-device boot is back on the intended K10 legacy/DFRobot-compatible camera path:
+- `K10LegacyCamera`: RGB565 VGA, XCLK=20000000.
+- GC2145 detected at address `0x3c`.
+- Capture mode is 640x480 RGB565 (614400-byte framebuffer in PSRAM).
+- PSRAM DMA is disabled for GC2145 capture.
+- Generic esp-video camera path is explicitly bypassed.
+- This VGA/20 MHz configuration is the later field-of-view fix; do NOT regress to the older QVGA/10 MHz note merely because it was once called golden.
+- Relevant later camera fix: `272196b` — restore native camera field of view.
 
-Observed during debugging:
-- Outdoor image could become almost completely white from overexposure.
-- Camera backend used the DFRobot-compatible `esp32-camera` path.
-- Logs included GC2145/RGB565/QVGA work and sensor-detection experiments.
-- A tested camera configuration was eventually considered good enough indoors/outdoors and the user requested that experiment to be committed as a K10 baseline.
-- Current active branch also contains K10 camera-to-Genius vision work.
+LCD auto-sleep is physically verified working again on the current stable branch.
 
-Important:
-- Do NOT return to the earlier “camera is simply broken outdoors” assumption without checking the active branch/current source.
+### Vision upload status 2026-10-04
 
+Camera hardware/capture is healthy: repeated 640x480 capture succeeded and JPEG encoding succeeded in about 212-222 ms.
+The current failure is after capture: HTTPS connection to `genius.minjiai.my.id:443` succeeds, but photo upload receives HTTP 404. Firmware currently routes K10 camera Explain to Genius `/api/vision/search`.
+Conclusion: do NOT debug/retune GC2145 for this 404. The remaining vision issue is the K10 <-> Genius endpoint/route contract or server routing. Prefer restoring server compatibility at `/api/vision/search` so stable K10 firmware does not need another camera-side change.
+
+## Stable integration branch 2026-10-04
+
+Branch: `fix/k10-stable-camera-autosleep-media`
+Commit: `38990c8` — accept `media`, `radio`, and `music` kinds in Genius `play_stream`.
+
+Reconnect decision:
+- Do NOT cherry-pick `a21919b`, `566cfb7`, `a8d5163`, or `8ffd830` onto this baseline merely to reproduce the older reconnect implementation.
+- The active branch already has the newer producer/PSRAM live reconnect implementation: generation tracking, Ogg demuxer reset, bounded live reconnect, and retry-budget reset after recovery.
+- The old cherry-pick attempt conflicted because it targeted the previous direct-reader WorkerTask architecture.
 ## K10 case / enclosure — active item
 
 Current physical task:
