@@ -193,6 +193,34 @@ class K10Launcher {
         lv_label_set_text(label_, buf);
     }
 public:
+    // Read-only MCP SD card probe. Reuses the existing mount and never unmounts an active app.
+    std::string ListRecordingsForMcp() {
+        if (recorder_app_.IsActive() || photo_mode_.load() || gallery_mode_.load()) {
+            return "SD card busy: close Recorder or Camera first";
+        }
+        const bool already_mounted = sd_card_ != nullptr;
+        if (!MountSd()) return "SD card mount failed";
+        DIR* dir = opendir("/sdcard/RECORD");
+        if (!dir) {
+            if (!already_mounted) UnmountSd();
+            return "No RECORD folder or recordings found";
+        }
+        std::vector<std::string> files;
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            std::string name(entry->d_name);
+            if (name.size() >= 4 && name.substr(name.size() - 4) == ".wav") {
+                files.push_back(name);
+            }
+        }
+        closedir(dir);
+        std::sort(files.begin(), files.end());
+        if (!already_mounted) UnmountSd();
+        std::string result = "Recordings (" + std::to_string(files.size()) + "):";
+        for (size_t i = 0; i < files.size() && i < 20; ++i) result += " " + files[i];
+        if (files.size() > 20) result += " ...";
+        return result;
+    }
     bool IsOpen() const { return panel_ != nullptr; }
     bool IsPhotoMode() const { return photo_mode_.load(); }
     void ExitPhoto() {

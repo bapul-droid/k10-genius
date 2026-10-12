@@ -554,6 +554,14 @@ private:
         auto& mcp_server = McpServer::GetInstance();
 
         mcp_server.AddTool(
+            "self.k10.sdcard.list_recordings",
+            "List WAV recording filenames stored on this K10 SD card, read-only. Use when the user asks which recordings are saved on the SD card.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                return launcher_.ListRecordingsForMcp();
+            });
+
+        mcp_server.AddTool(
             "self.k10.sensors",
             "Read the K10 onboard sensors: temperature, humidity, ambient light and accelerometer.",
             PropertyList(),
