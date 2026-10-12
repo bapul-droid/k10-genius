@@ -391,6 +391,8 @@ private:
             Application::GetInstance().WakeK10LcdFromButton();
             if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryNext(); return; }
             if (self->launcher_.IsPhotoMode()) { self->launcher_.RetakePhoto(); return; }
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryNext(); return; }
+            if (self->launcher_.IsRecorderMode()) { self->launcher_.RecorderTogglePlayback(); return; }
             if (self->launcher_.IsOpen()) { self->launcher_.Next(); return; }
             auto codec = self->GetAudioCodec();
             auto volume = codec->output_volume() - 10;
@@ -401,6 +403,8 @@ private:
 
         }, this);
         iot_button_register_cb(btn_a, BUTTON_DOUBLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryTogglePlay(); return; }
             auto& app = Application::GetInstance();
             if (app.IsGeniusMediaActive()) {
                 ESP_LOGI(TAG, "Button A double click: stop Genius media");
@@ -410,6 +414,8 @@ private:
         iot_button_register_cb(btn_a, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
             if (self->launcher_.IsPhotoMode()) { self->launcher_.ExitPhoto(); return; }
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.ExitRecGallery(); return; }
+            if (self->launcher_.IsRecorderMode()) { self->launcher_.ExitRecorder(); return; }
             self->launcher_.Open();
         }, this);
 
@@ -429,6 +435,8 @@ private:
             Application::GetInstance().WakeK10LcdFromButton();
             if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryPrev(); return; }
             if (self->launcher_.IsPhotoMode()) { self->launcher_.FreezePhoto(); return; }
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryPrev(); return; }
+            if (self->launcher_.IsRecorderMode()) { self->launcher_.RecorderToggleRecord(); return; }
             if (self->launcher_.IsOpen()) { self->launcher_.Select(); return; }
             auto codec = self->GetAudioCodec();
             auto volume = codec->output_volume() + 10;
@@ -439,6 +447,8 @@ private:
 
         }, this);
         iot_button_register_cb(btn_b, BUTTON_DOUBLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryTogglePlay(); return; }
             auto& app = Application::GetInstance();
             if (app.IsGeniusMediaActive()) {
                 ESP_LOGI(TAG, "Button B double click: stop Genius media");
@@ -448,6 +458,7 @@ private:
         iot_button_register_cb(btn_b, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
             auto& app = Application::GetInstance();
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryPrev(); return; }
             if (app.IsGeniusMediaActive()) {
                 app.StopGeniusPlayback();
                 return;

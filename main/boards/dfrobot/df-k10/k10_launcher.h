@@ -23,6 +23,7 @@
 #include <string>
 #include <algorithm>
 #include "display/lvgl_display/jpg/jpeg_to_image.h"
+#include "k10_recorder.h"
 
 inline std::atomic<bool> k10_launcher_active{false};
 
@@ -43,6 +44,7 @@ class K10Launcher {
     std::atomic<bool> gallery_mode_{false};
     std::vector<std::string> gallery_files_;
     size_t gallery_index_ = 0;
+    K10Recorder recorder_app_;
     void CameraStatus(const char* text) {
         auto* lcd = static_cast<LcdDisplay*>(Board::GetInstance().GetDisplay());
         if (lcd) lcd->SetK10CameraStatus(text);
@@ -160,10 +162,10 @@ class K10Launcher {
         });
     }
     static constexpr const char* home_[5] = {"XiaoZhi", "Recorder", "Camera", "Tools", "Exit"};
-    static constexpr const char* recorder_[2] = {"Recorder info", "Back"};
+    static constexpr const char* recorder_[3] = {"Start Recorder", "Rec Gallery", "Back"};
     static constexpr const char* camera_[3] = {"Take photo", "Gallery", "Back"};
     static constexpr const char* tools_[3] = {"System info", "About", "Back"};
-    unsigned Count() const { return page_ == Page::Home ? 5 : page_ == Page::Tools ? 3 : page_ == Page::Camera ? 3 : 2; }
+    unsigned Count() const { return page_ == Page::Home ? 5 : page_ == Page::Tools ? 3 : page_ == Page::Camera ? 3 : page_ == Page::Recorder ? 3 : 2; }
     const char* Name(unsigned i) const {
         switch (page_) {
             case Page::Recorder: return recorder_[i];
@@ -202,6 +204,38 @@ public:
         UnmountSd();
         k10_launcher_active.store(false);
     }
+    // ---- Recorder: standalone audio recorder ----
+    bool IsRecorderMode() const { return recorder_app_.IsActive(); }
+    void EnterRecorder() {
+        Close();
+        k10_launcher_active.store(true);
+        // Recorder takes over LCD status line; reuse camera overlay for fullscreen status.
+        if (auto* lcd = static_cast<LcdDisplay*>(Board::GetInstance().GetDisplay())) lcd->SetK10CameraMode(true);
+        recorder_app_.Enter([this]() { return MountSd(); }, [this]() { UnmountSd(); });
+    }
+    void ExitRecorder() {
+        recorder_app_.Exit();
+        if (auto* lcd = static_cast<LcdDisplay*>(Board::GetInstance().GetDisplay())) lcd->SetK10CameraMode(false);
+        k10_launcher_active.store(false);
+    }
+    void RecorderToggleRecord() { recorder_app_.ToggleRecord(); }
+    void RecorderTogglePlayback() { recorder_app_.TogglePlayback(); }
+    // ---- Rec Gallery passthrough ----
+    bool IsRecGalleryMode() const { return recorder_app_.IsGalleryMode(); }
+    void EnterRecGallery() {
+        Close();
+        k10_launcher_active.store(true);
+        if (auto* lcd = static_cast<LcdDisplay*>(Board::GetInstance().GetDisplay())) lcd->SetK10CameraMode(true);
+        recorder_app_.EnterGallery([this]() { return MountSd(); }, [this]() { UnmountSd(); });
+    }
+    void ExitRecGallery() {
+        recorder_app_.ExitGallery();
+        if (auto* lcd = static_cast<LcdDisplay*>(Board::GetInstance().GetDisplay())) lcd->SetK10CameraMode(false);
+        k10_launcher_active.store(false);
+    }
+    void RecGalleryNext() { recorder_app_.GalleryNext(); }
+    void RecGalleryPrev() { recorder_app_.GalleryPrev(); }
+    void RecGalleryTogglePlay() { recorder_app_.GalleryTogglePlay(); }
     void RetakePhoto() { if (IsPhotoMode()) StartLive(); }
     void FreezePhoto() {
         if (!IsPhotoMode()) return;
@@ -319,6 +353,14 @@ public:
         if (page_ == Page::Camera && index_ == 1) {
             Close();
             EnterGallery();
+            return;
+        }
+        if (page_ == Page::Recorder && index_ == 0) {
+            EnterRecorder();
+            return;
+        }
+        if (page_ == Page::Recorder && index_ == 1) {
+            EnterRecGallery();
             return;
         }
         if (!lvgl_port_lock(1000)) return;
