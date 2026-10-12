@@ -554,6 +554,30 @@ private:
         auto& mcp_server = McpServer::GetInstance();
 
         mcp_server.AddTool(
+            "self.k10.app.open_recorder",
+            "Open the K10 Recorder app on its LCD. Recording starts only after pressing the physical record button. Use when the user asks to open the recorder app.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (launcher_.IsRecorderMode()) return std::string("Recorder already open");
+                if (launcher_.IsRecGalleryMode() || launcher_.IsPhotoMode() || launcher_.IsGalleryMode())
+                    return std::string("Close the current app first");
+                launcher_.EnterRecorder();
+                return std::string("Recorder opened; use physical buttons to record");
+            });
+
+        mcp_server.AddTool(
+            "self.k10.app.open_recordings_gallery",
+            "Open the K10 saved audio recordings gallery on its LCD. Use when the user asks to open the recording gallery.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (launcher_.IsRecGalleryMode()) return std::string("Recording gallery already open");
+                if (launcher_.IsRecorderMode() || launcher_.IsPhotoMode() || launcher_.IsGalleryMode())
+                    return std::string("Close the current app first");
+                launcher_.EnterRecGallery();
+                return std::string("Recording gallery opened; use physical buttons to browse and play");
+            });
+
+        mcp_server.AddTool(
             "self.k10.sdcard.list_recordings",
             "List WAV recording filenames stored on this K10 SD card, read-only. Use when the user asks which recordings are saved on the SD card.",
             PropertyList(),
