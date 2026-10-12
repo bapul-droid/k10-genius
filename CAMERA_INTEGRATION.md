@@ -31,3 +31,9 @@ Research/port design only. No Camera integration patch applied or flashed yet.
 - ESP-IDF port should test a **dedicated SPI2_HOST** initialized with SCLK44/MISO41/MOSI42/CS40, while keeping LCD SPI3 untouched. Verify GPIO41 sharing with LCD does not conflict in practice; SD initialization only in exclusive Camera mode.
 - `photoSaveToTFCard()` writes RGB565 BMP two bytes per pixel, locking SPI for each pixel; explains long save time and offers future buffered-write optimization.
 
+
+## v18 (12 Oct 2026) - smooth preview + Gallery
+- Preview: timer 500ms -> 150ms; new LcdDisplay::UpdateK10Preview reuses one persistent RGB565 buffer (no per-frame 600KB alloc, no LVGL object recreate) - only memcpy + invalidate.
+- Gallery: new Camera menu item; lists JPEGs in /sdcard/DCIM (sorted), decodes via jpeg_to_image (esp_new_jpeg, RGB565) and shows fullscreen with counter. A=next, B=prev, A-long=exit.
+- SetK10CameraStatus now reuses a single label (was leaking one label per call).
+- Untested on hardware: preview smoothness + Gallery navigation.

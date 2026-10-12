@@ -9,7 +9,7 @@ Source reference: D:\ESP-PROJECTS\ACTIVE\k10-muse\esp32\components\muse\muse_men
 - Tap B while launcher open: select item.
 - Select Back to go up one level; select Exit to return to XiaoZhi robot GIF.
 - While launcher closed, retain existing XiaoZhi volume/media/Wi-Fi button behavior except the agreed A-hold shortcut.
-- Never activate microSD in this phase: SD CS GPIO39 conflicts with audio I2S DIN GPIO39.
+- ~~Never activate microSD in this phase: SD CS GPIO39 conflicts with audio I2S DIN GPIO39.~~ SUPERSEDED 2026-10-12 (v17): official DFRobot SD pins use CS=GPIO40 (SPI1/HSPI: SCLK=44, MISO=41, MOSI=42, CS=40), so there is no conflict with audio I2S DIN GPIO39. SD is now mounted on a dedicated SPI2_HOST.
 
 ## First stage
 - Launcher list: XiaoZhi, Recorder (placeholder), Camera (placeholder), Tools (placeholder), Exit.

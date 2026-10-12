@@ -1086,12 +1086,14 @@ void LcdDisplay::SetK10CameraStatus(const char* message) {
         lv_obj_set_style_pad_all(k10_camera_overlay_, 0, 0);
         lv_obj_set_style_border_width(k10_camera_overlay_, 0, 0);
     }
-    auto* label = lv_label_create(k10_camera_overlay_);
-    lv_label_set_text(label, message);
-    lv_obj_set_style_bg_color(label, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -8);
+    if (!k10_camera_status_label_) {
+        k10_camera_status_label_ = lv_label_create(k10_camera_overlay_);
+        lv_obj_set_style_bg_color(k10_camera_status_label_, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(k10_camera_status_label_, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(k10_camera_status_label_, lv_color_white(), 0);
+        lv_obj_align(k10_camera_status_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
+    }
+    lv_label_set_text(k10_camera_status_label_, message);
     lv_obj_move_foreground(k10_camera_overlay_);
 }
 
@@ -1104,7 +1106,65 @@ void LcdDisplay::SetK10CameraMode(bool enabled) {
             k10_camera_overlay_ = nullptr;
         }
         k10_camera_image_.reset();
+        k10_camera_photo_ = nullptr;
+        k10_camera_status_label_ = nullptr;
     }
+}
+
+void LcdDisplay::UpdateK10Preview(const uint8_t* rgb565, int width, int height) {
+    DisplayLockGuard lock(this);
+    if (!rgb565 || width <= 0 || height <= 0) return;
+    if (!k10_camera_mode_) {
+        // Alexa Vision: v17 behavior - chat bubble preview via SetPreviewImage.
+        // (Camera App uses the persistent-buffer path below.)
+        size_t data_size = (size_t)width * (size_t)height * 2;
+        uint8_t* preview_data =
+            (uint8_t*)heap_caps_malloc(data_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (preview_data != nullptr) {
+            memcpy(preview_data, rgb565, data_size);
+            SetPreviewImage(std::make_unique<LvglAllocatedImage>(
+                preview_data, data_size, width, height, width * 2, LV_COLOR_FORMAT_RGB565));
+        }
+        return;
+    }
+    if (!k10_camera_overlay_) {
+        k10_camera_overlay_ = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(k10_camera_overlay_, lv_pct(100), lv_pct(100));
+        lv_obj_center(k10_camera_overlay_);
+        lv_obj_set_style_bg_color(k10_camera_overlay_, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(k10_camera_overlay_, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(k10_camera_overlay_, 0, 0);
+        lv_obj_set_style_border_width(k10_camera_overlay_, 0, 0);
+        lv_obj_set_scrollbar_mode(k10_camera_overlay_, LV_SCROLLBAR_MODE_OFF);
+    }
+    size_t need = (size_t)width * height * 2;
+    auto* alloc_img = static_cast<LvglAllocatedImage*>(k10_camera_image_.get());
+    const auto* dsc = alloc_img ? alloc_img->image_dsc() : nullptr;
+    bool same = dsc && dsc->header.w == width && dsc->header.h == height;
+    if (!same) {
+        uint8_t* buf = (uint8_t*)heap_caps_malloc(need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!buf) return;
+        memcpy(buf, rgb565, need);
+        lv_obj_clean(k10_camera_overlay_);
+        k10_camera_status_label_ = nullptr;
+        k10_camera_image_ = std::make_unique<LvglAllocatedImage>(
+            buf, need, width, height, width * 2, LV_COLOR_FORMAT_RGB565);
+        auto* new_img = static_cast<LvglAllocatedImage*>(k10_camera_image_.get());
+        if (!new_img || !new_img->IsValid()) {
+            k10_camera_image_.reset();
+            return;
+        }
+        k10_camera_photo_ = lv_image_create(k10_camera_overlay_);
+        lv_image_set_src(k10_camera_photo_, k10_camera_image_->image_dsc());
+        int zoom_w = lv_obj_get_width(k10_camera_overlay_) * 256 / width;
+        int zoom_h = lv_obj_get_height(k10_camera_overlay_) * 256 / height;
+        lv_image_set_scale(k10_camera_photo_, zoom_w > zoom_h ? zoom_w : zoom_h);
+        lv_obj_center(k10_camera_photo_);
+    } else {
+        memcpy(alloc_img->data(), rgb565, need);
+        if (k10_camera_photo_) lv_obj_invalidate(k10_camera_photo_);
+    }
+    lv_obj_move_foreground(k10_camera_overlay_);
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
@@ -1121,6 +1181,8 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
             lv_obj_set_scrollbar_mode(k10_camera_overlay_, LV_SCROLLBAR_MODE_OFF);
         }
         lv_obj_clean(k10_camera_overlay_);
+        k10_camera_status_label_ = nullptr;
+        k10_camera_photo_ = nullptr;
         k10_camera_image_ = std::move(image);
         auto* photo = lv_image_create(k10_camera_overlay_);
         const auto* dsc = k10_camera_image_->image_dsc();
@@ -1128,7 +1190,7 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         if (dsc->header.w && dsc->header.h) {
             int zoom_w = lv_obj_get_width(k10_camera_overlay_) * 256 / dsc->header.w;
             int zoom_h = lv_obj_get_height(k10_camera_overlay_) * 256 / dsc->header.h;
-            lv_image_set_scale(photo, zoom_w < zoom_h ? zoom_w : zoom_h);
+            lv_image_set_scale(photo, zoom_w > zoom_h ? zoom_w : zoom_h);
         }
         lv_obj_center(photo);
         lv_obj_move_foreground(k10_camera_overlay_);

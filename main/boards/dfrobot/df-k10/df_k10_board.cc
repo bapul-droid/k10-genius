@@ -389,6 +389,7 @@ private:
         iot_button_register_cb(btn_a, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
             Application::GetInstance().WakeK10LcdFromButton();
+            if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryNext(); return; }
             if (self->launcher_.IsPhotoMode()) { self->launcher_.RetakePhoto(); return; }
             if (self->launcher_.IsOpen()) { self->launcher_.Next(); return; }
             auto codec = self->GetAudioCodec();
@@ -426,6 +427,7 @@ private:
         iot_button_register_cb(btn_b, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
             Application::GetInstance().WakeK10LcdFromButton();
+            if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryPrev(); return; }
             if (self->launcher_.IsPhotoMode()) { self->launcher_.FreezePhoto(); return; }
             if (self->launcher_.IsOpen()) { self->launcher_.Select(); return; }
             auto codec = self->GetAudioCodec();

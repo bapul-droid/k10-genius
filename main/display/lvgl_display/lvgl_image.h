@@ -38,6 +38,7 @@ public:
     virtual ~LvglAllocatedImage();
     virtual const lv_img_dsc_t* image_dsc() const override { return &image_dsc_; }
     bool IsValid() const { return valid_; }
+    uint8_t* data() { return const_cast<uint8_t*>(image_dsc_.data); }
 
 private:
     lv_img_dsc_t image_dsc_;
