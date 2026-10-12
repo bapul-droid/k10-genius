@@ -1074,8 +1074,66 @@ void LcdDisplay::SetupUI() {
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
 }
 
+void LcdDisplay::SetK10CameraStatus(const char* message) {
+    DisplayLockGuard lock(this);
+    if (!k10_camera_mode_) return;
+    if (!k10_camera_overlay_) {
+        k10_camera_overlay_ = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(k10_camera_overlay_, lv_pct(100), lv_pct(100));
+        lv_obj_center(k10_camera_overlay_);
+        lv_obj_set_style_bg_color(k10_camera_overlay_, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(k10_camera_overlay_, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(k10_camera_overlay_, 0, 0);
+        lv_obj_set_style_border_width(k10_camera_overlay_, 0, 0);
+    }
+    auto* label = lv_label_create(k10_camera_overlay_);
+    lv_label_set_text(label, message);
+    lv_obj_set_style_bg_color(label, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_move_foreground(k10_camera_overlay_);
+}
+
+void LcdDisplay::SetK10CameraMode(bool enabled) {
+    DisplayLockGuard lock(this);
+    k10_camera_mode_ = enabled;
+    if (!enabled) {
+        if (k10_camera_overlay_) {
+            lv_obj_delete(k10_camera_overlay_);
+            k10_camera_overlay_ = nullptr;
+        }
+        k10_camera_image_.reset();
+    }
+}
+
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     DisplayLockGuard lock(this);
+    if (k10_camera_mode_ && image) {
+        if (!k10_camera_overlay_) {
+            k10_camera_overlay_ = lv_obj_create(lv_screen_active());
+            lv_obj_set_size(k10_camera_overlay_, lv_pct(100), lv_pct(100));
+            lv_obj_center(k10_camera_overlay_);
+            lv_obj_set_style_bg_color(k10_camera_overlay_, lv_color_black(), 0);
+            lv_obj_set_style_bg_opa(k10_camera_overlay_, LV_OPA_COVER, 0);
+            lv_obj_set_style_pad_all(k10_camera_overlay_, 0, 0);
+            lv_obj_set_style_border_width(k10_camera_overlay_, 0, 0);
+            lv_obj_set_scrollbar_mode(k10_camera_overlay_, LV_SCROLLBAR_MODE_OFF);
+        }
+        lv_obj_clean(k10_camera_overlay_);
+        k10_camera_image_ = std::move(image);
+        auto* photo = lv_image_create(k10_camera_overlay_);
+        const auto* dsc = k10_camera_image_->image_dsc();
+        lv_image_set_src(photo, dsc);
+        if (dsc->header.w && dsc->header.h) {
+            int zoom_w = lv_obj_get_width(k10_camera_overlay_) * 256 / dsc->header.w;
+            int zoom_h = lv_obj_get_height(k10_camera_overlay_) * 256 / dsc->header.h;
+            lv_image_set_scale(photo, zoom_w < zoom_h ? zoom_w : zoom_h);
+        }
+        lv_obj_center(photo);
+        lv_obj_move_foreground(k10_camera_overlay_);
+        return;
+    }
     if (preview_image_ == nullptr) {
         ESP_LOGE(TAG, "Preview image is not initialized");
         return;

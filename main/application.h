@@ -136,6 +136,10 @@ public:
      */
     void ResetProtocol();
 
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    void WakeK10LcdFromButton();
+#endif
+
 private:
     Application();
     ~Application();

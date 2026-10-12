@@ -8,6 +8,10 @@
 
 #define TAG "K10LegacyCamera"
 
+bool SaveK10LegacyJpeg(Camera* camera, const char* path) {
+    return camera && static_cast<Esp32Camera*>(camera)->SaveJpeg(path);
+}
+
 Camera* CreateK10LegacyCamera() {
     camera_config_t config = {};
     config.pin_pwdn = CAMERA_PIN_PWDN;

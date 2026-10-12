@@ -4,6 +4,7 @@
 #include "wifi_board.h"
 #include "k10_audio_codec.h"
 #include "display/lcd_display.h"
+#include "k10_launcher.h"
 #include "esp_lcd_ili9341.h"
 #include "led_control.h"
 #include "application.h"
@@ -41,6 +42,7 @@ private:
     button_driver_t* btn_b_driver_ = nullptr;
 
     CircularStrip* led_strip_;
+    K10Launcher launcher_;
 
     static Df_K10Board* instance_;
 
@@ -272,9 +274,9 @@ private:
         constexpr spi_host_device_t SD_HOST = SPI2_HOST;
 
         spi_bus_config_t bus_cfg = {};
-        bus_cfg.mosi_io_num = GPIO_NUM_41;
-        bus_cfg.miso_io_num = GPIO_NUM_40;
-        bus_cfg.sclk_io_num = GPIO_NUM_42;
+        bus_cfg.mosi_io_num = GPIO_NUM_42; // DFRobot official
+        bus_cfg.miso_io_num = GPIO_NUM_41; // DFRobot official
+        bus_cfg.sclk_io_num = GPIO_NUM_44; // DFRobot official
         bus_cfg.quadwp_io_num = GPIO_NUM_NC;
         bus_cfg.quadhd_io_num = GPIO_NUM_NC;
         bus_cfg.max_transfer_sz = 4096;
@@ -287,7 +289,7 @@ private:
 
         sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
         slot_config.host_id = SD_HOST;
-        slot_config.gpio_cs = GPIO_NUM_39;
+        slot_config.gpio_cs = GPIO_NUM_40; // DFRobot official
 
         esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
         mount_config.format_if_mount_failed = false;
@@ -319,7 +321,7 @@ private:
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
         buscfg.mosi_io_num = GPIO_NUM_21;
-        buscfg.miso_io_num = GPIO_NUM_NC;
+        buscfg.miso_io_num = GPIO_NUM_41; // K10 TF card shares LCD SPI3 bus
         buscfg.sclk_io_num = GPIO_NUM_12;
         buscfg.quadwp_io_num = GPIO_NUM_NC;
         buscfg.quadhd_io_num = GPIO_NUM_NC;
@@ -386,6 +388,9 @@ private:
         ESP_ERROR_CHECK(iot_button_create(&btn_a_config, btn_a_driver_, &btn_a));
         iot_button_register_cb(btn_a, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
+            Application::GetInstance().WakeK10LcdFromButton();
+            if (self->launcher_.IsPhotoMode()) { self->launcher_.RetakePhoto(); return; }
+            if (self->launcher_.IsOpen()) { self->launcher_.Next(); return; }
             auto codec = self->GetAudioCodec();
             auto volume = codec->output_volume() - 10;
             if (volume < 0) volume = 0;
@@ -403,18 +408,8 @@ private:
         }, this);
         iot_button_register_cb(btn_a, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
-            auto& app = Application::GetInstance();
-            if (app.IsGeniusMediaActive()) {
-                app.StopGeniusPlayback();
-                return;
-            }
-            auto codec = self->GetAudioCodec();
-            auto volume = codec->output_volume() - 10;
-            if (volume < 0) {
-                volume = 0;
-            }
-            codec->SetOutputVolume(volume);
-            self->GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+            if (self->launcher_.IsPhotoMode()) { self->launcher_.ExitPhoto(); return; }
+            self->launcher_.Open();
         }, this);
 
         // Button B
@@ -430,6 +425,9 @@ private:
         ESP_ERROR_CHECK(iot_button_create(&btn_b_config, btn_b_driver_, &btn_b));
         iot_button_register_cb(btn_b, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<Df_K10Board*>(usr_data);
+            Application::GetInstance().WakeK10LcdFromButton();
+            if (self->launcher_.IsPhotoMode()) { self->launcher_.FreezePhoto(); return; }
+            if (self->launcher_.IsOpen()) { self->launcher_.Select(); return; }
             auto codec = self->GetAudioCodec();
             auto volume = codec->output_volume() + 10;
             if (volume > 100) volume = 100;

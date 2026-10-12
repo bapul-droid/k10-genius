@@ -1125,3 +1125,12 @@ std::expected<std::string, std::string> EspVideo::Explain(const std::string& que
         (int)frame_.len, (int)total_sent, (int)remain_stack_size, question.c_str(), result.c_str());
     return result;
 }
+
+
+bool EspVideo::SaveK10Jpeg(const char* path) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    return legacy_camera_ && SaveK10LegacyJpeg(legacy_camera_, path);
+#else
+    return false;
+#endif
+}

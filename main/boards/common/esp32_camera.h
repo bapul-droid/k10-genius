@@ -35,6 +35,7 @@ public:
 
     virtual void SetExplainUrl(const std::string& url, const std::string& token) override;
     virtual bool Capture() override;
+    bool SaveJpeg(const char* path);
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;
     virtual bool SetSwapBytes(bool enabled) override;

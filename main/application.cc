@@ -1,4 +1,7 @@
 #include "application.h"
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+#include "boards/dfrobot/df-k10/k10_launcher.h"
+#endif
 #ifdef CONFIG_GENIUS_DEVICE_CORE
 #include "genius/command_handler.h"
 #include "genius/genius_v2_client.h"
@@ -1117,6 +1120,15 @@ void Application::SetK10Backlight(bool on) {
     board.SetScreenBrightness(on ? 100 : 0);
 }
 
+void Application::WakeK10LcdFromButton() {
+    Schedule([this]() {
+        SetK10Backlight(true);
+        if (GetDeviceState() == kDeviceStateIdle && !k10_launcher_active.load()) {
+            ArmK10LcdSleep();
+        }
+    });
+}
+
 void Application::ArmK10LcdSleep() {
     if (lcd_sleep_timer_handle_ == nullptr) {
         esp_timer_create_args_t args = {};
@@ -1124,7 +1136,12 @@ void Application::ArmK10LcdSleep() {
             auto* app = static_cast<Application*>(arg);
             app->Schedule([app]() {
                 if (app->GetDeviceState() == kDeviceStateIdle) {
-                    app->SetK10Backlight(false);
+                    if (k10_launcher_active.load()) {
+                        app->SetK10Backlight(true);
+                        app->ArmK10LcdSleep();
+                    } else {
+                        app->SetK10Backlight(false);
+                    }
                 }
             });
         };
