@@ -578,6 +578,53 @@ private:
             });
 
         mcp_server.AddTool(
+            "self.k10.recording.delete_request",
+            "PHASE 1: Request deletion of K10 audio recording(s). Does NOT delete yet. "
+            "Target can be a filename like 'REC_000003.wav', 'latest' for the newest recording, "
+            "or 'all' for ALL recordings. Returns file details and a confirmation token. "
+            "You MUST ask the user to confirm with the exact details before calling delete_confirm. "
+            "For 'all', warn clearly that EVERY recording will be permanently deleted.",
+            PropertyList({
+                Property("target", kPropertyTypeString),
+            }),
+            [this](const PropertyList& props) -> ReturnValue {
+                std::string target = props["target"].value<std::string>();
+                auto info = launcher_.RecorderDeleteRequest(target);
+                if (!info.valid) return std::string("Delete request failed: ") + info.error;
+                char buf[256];
+                if (info.filename == "all") {
+                    snprintf(buf, sizeof(buf),
+                        "CONFIRM REQUIRED: Delete ALL %ld recordings (%ld KB total)? "
+                        "This cannot be undone. Token: %s. "
+                        "Ask user: 'Delete all %ld recordings permanently?'",
+                        info.duration_sec, info.size_bytes / 1024,
+                        info.token.c_str(), info.duration_sec);
+                } else {
+                    snprintf(buf, sizeof(buf),
+                        "CONFIRM REQUIRED: Delete %s (%ld sec, %ld KB)? "
+                        "Token: %s. Ask user to confirm.",
+                        info.filename.c_str(), info.duration_sec,
+                        info.size_bytes / 1024, info.token.c_str());
+                }
+                return std::string(buf);
+            });
+
+        mcp_server.AddTool(
+            "self.k10.recording.delete_confirm",
+            "PHASE 2: Execute confirmed deletion. Only call after the user explicitly confirmed "
+            "the exact target from delete_request. The token must match the one from delete_request. "
+            "If the file changed since the request, the token will not match and deletion is refused.",
+            PropertyList({
+                Property("target", kPropertyTypeString),
+                Property("token", kPropertyTypeString),
+            }),
+            [this](const PropertyList& props) -> ReturnValue {
+                std::string target = props["target"].value<std::string>();
+                std::string token = props["token"].value<std::string>();
+                return launcher_.RecorderDeleteConfirm(target, token);
+            });
+
+        mcp_server.AddTool(
             "self.k10.sdcard.list_recordings",
             "List WAV recording filenames stored on this K10 SD card, read-only. Use when the user asks which recordings are saved on the SD card.",
             PropertyList(),

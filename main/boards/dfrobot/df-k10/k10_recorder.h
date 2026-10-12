@@ -140,6 +140,223 @@ public:
         }
     }
 
+    bool MountSdIfNeeded() {
+        if (mount_sd_) return mount_sd_();
+        return false;
+    }
+
+    std::string FindLatestRecording() {
+        unsigned max_n = 0;
+        std::string latest;
+        DIR* d = opendir("/sdcard/RECORD");
+        if (!d) return latest;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            unsigned n = 0;
+            char extra = 0;
+            if (sscanf(e->d_name, "REC_%06u.wav%c", &n, &extra) == 1 && n > max_n) {
+                max_n = n;
+                latest = e->d_name;
+            }
+        }
+        closedir(d);
+        return latest;
+    }
+
+    // ---- Delete: two-phase confirmed deletion via MCP ----
+    // Phase 1: DeleteRequest returns file info + token (does NOT delete).
+    // Phase 2: DeleteConfirm validates token + safety checks, then deletes.
+    // Token binds confirmation to exact file state (name+size), preventing
+    // TOCTOU issues if file changes between request and confirm.
+    struct DeleteInfo {
+        bool valid = false;
+        std::string filename;
+        long size_bytes = 0;
+        long duration_sec = 0;
+        std::string token;
+        std::string error;
+    };
+
+    // Validate filename: must be REC_%06u.wav (prevents path traversal)
+    static bool IsValidRecFilename(const std::string& name) {
+        // "REC_000001.wav" = 4 + 6 + 4 = 14 chars
+        if (name.size() != 14) return false;
+        unsigned n = 0;
+        // Strict: sscanf must consume entire string
+        char extra = 0;
+        if (sscanf(name.c_str(), "REC_%06u.wav%c", &n, &extra) != 1) return false;
+        return true;
+    }
+
+    // NOTE: Caller must ensure SD card is mounted before calling DeleteRequest.
+    // See K10Launcher::RecorderDeleteRequest for the mount/unmount wrapper.
+    DeleteInfo DeleteRequest(const std::string& target) {
+        DeleteInfo info;
+        std::string filename = target;
+        // Resolve "latest" to actual filename
+        if (target == "latest") {
+            filename = FindLatestRecording();
+            if (filename.empty()) {
+                info.error = "No recordings found";
+                return info;
+            }
+        } else if (target == "all") {
+            return DeleteRequestAll();
+        }
+        if (!IsValidRecFilename(filename)) {
+            info.error = "Invalid filename (must be REC_XXXXXX.wav)";
+            return info;
+        }
+        std::string path = "/sdcard/RECORD/" + filename;
+        FILE* f = fopen(path.c_str(), "rb");
+        if (!f) {
+            info.error = "File not found: " + filename;
+            return info;
+        }
+        fseek(f, 0, SEEK_END);
+        long len = ftell(f);
+        fclose(f);
+        // Safety: refuse if file is currently being recorded or played
+        if (state_.load() == State::Recording && rec_path_ == path) {
+            info.error = "Cannot delete: file is currently being recorded";
+            return info;
+        }
+        if (state_.load() == State::Playing && last_path_ == path) {
+            info.error = "Cannot delete: file is currently playing";
+            return info;
+        }
+        info.valid = true;
+        info.filename = filename;
+        info.size_bytes = len;
+        info.duration_sec = len > 44 ? (len - 44) / (kSampleRate * kChannels * kBitsPerSample / 8) : 0;
+        // Token: simple hash of filename + size (binds to exact file state)
+        char tok[32];
+        unsigned h = 0;
+        for (char c : filename) h = h * 31 + (unsigned char)c;
+        h ^= (unsigned)len;
+        snprintf(tok, sizeof(tok), "%08X", h);
+        info.token = tok;
+        return info;
+    }
+
+    DeleteInfo DeleteRequestAll() {
+        DeleteInfo info;
+        // Count files and total size for confirmation
+        DIR* d = opendir("/sdcard/RECORD");
+        if (!d) {
+            info.error = "Cannot open RECORD directory";
+            return info;
+        }
+        int count = 0;
+        long total = 0;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            std::string name = e->d_name;
+            if (!IsValidRecFilename(name)) continue;
+            std::string path = "/sdcard/RECORD/" + name;
+            // Skip active files in count
+            if (state_.load() == State::Recording && rec_path_ == path) continue;
+            if (state_.load() == State::Playing && last_path_ == path) continue;
+            FILE* f = fopen(path.c_str(), "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                total += ftell(f);
+                fclose(f);
+                count++;
+            }
+        }
+        closedir(d);
+        if (count == 0) {
+            info.error = "No recordings to delete";
+            return info;
+        }
+        info.valid = true;
+        info.filename = "all";
+        info.size_bytes = total;
+        info.duration_sec = count;  // reuse: count stored in duration_sec for "all"
+        char tok[32];
+        snprintf(tok, sizeof(tok), "ALL%05d", count * 7919 + (int)(total % 100000));
+        info.token = tok;
+        return info;
+    }
+
+    std::string DeleteConfirm(const std::string& target, const std::string& token) {
+        if (target == "all") {
+            return DeleteConfirmAll(token);
+        }
+        std::string filename = target;
+        if (target == "latest") {
+            filename = FindLatestRecording();
+            if (filename.empty()) return "No recordings found";
+        }
+        if (!IsValidRecFilename(filename)) return "Invalid filename";
+        // Re-validate via DeleteRequest to get fresh token
+        DeleteInfo info = DeleteRequest(filename);
+        if (!info.valid) return info.error;
+        if (info.token != token) {
+            return "Confirmation expired: file changed since request. Please request deletion again.";
+        }
+        std::string path = "/sdcard/RECORD/" + filename;
+        // Final safety check (redundant but critical)
+        if (state_.load() == State::Recording && rec_path_ == path) {
+            return "Cannot delete: file is currently being recorded";
+        }
+        if (state_.load() == State::Playing && last_path_ == path) {
+            return "Cannot delete: file is currently playing";
+        }
+        if (remove(path.c_str()) != 0) {
+            return "Delete failed: " + filename;
+        }
+        ESP_LOGI(REC_TAG, "Deleted recording: %s", filename.c_str());
+        // Clear last_path_ if it was the deleted file
+        if (last_path_ == path) last_path_.clear();
+        // Refresh gallery if active
+        if (gallery_active_.load()) {
+            GalleryRescan();
+            if (!gallery_files_.empty()) {
+                GalleryShow(gallery_index_ < gallery_files_.size() ? gallery_index_ : 0);
+            } else {
+                ShowStatus("NO RECORDINGS");
+            }
+        }
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Deleted %s", filename.c_str());
+        return std::string(msg);
+    }
+
+    std::string DeleteConfirmAll(const std::string& token) {
+        DeleteInfo info = DeleteRequestAll();
+        if (!info.valid) return info.error;
+        if (info.token != token) {
+            return "Confirmation expired: recordings changed since request. Please request again.";
+        }
+        int deleted = 0, skipped = 0;
+        DIR* d = opendir("/sdcard/RECORD");
+        if (!d) return "Cannot open RECORD directory";
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            std::string name = e->d_name;
+            if (!IsValidRecFilename(name)) continue;
+            std::string path = "/sdcard/RECORD/" + name;
+            if (state_.load() == State::Recording && rec_path_ == path) { skipped++; continue; }
+            if (state_.load() == State::Playing && last_path_ == path) { skipped++; continue; }
+            if (remove(path.c_str()) == 0) deleted++;
+            else skipped++;
+        }
+        closedir(d);
+        last_path_.clear();
+        if (gallery_active_.load()) {
+            GalleryRescan();
+            ShowStatus(gallery_files_.empty() ? "NO RECORDINGS" : "GALLERY UPDATED");
+            if (!gallery_files_.empty()) GalleryShow(0);
+        }
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Deleted %d recordings%s", deleted,
+                 skipped > 0 ? " (skipped active files)" : "");
+        ESP_LOGI(REC_TAG, "%s", msg);
+        return std::string(msg);
+    }
+
 private:
     std::atomic<bool> active_{false};
     std::atomic<State> state_{State::Idle};

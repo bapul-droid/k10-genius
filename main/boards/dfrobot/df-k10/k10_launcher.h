@@ -264,6 +264,36 @@ public:
     void RecGalleryNext() { recorder_app_.GalleryNext(); }
     void RecGalleryPrev() { recorder_app_.GalleryPrev(); }
     void RecGalleryTogglePlay() { recorder_app_.GalleryTogglePlay(); }
+    // ---- Delete via MCP: handles SD mount like ListRecordingsForMcp ----
+    // If Recorder/Gallery active, SD already mounted. Otherwise mount temporarily.
+    auto RecorderDeleteRequest(const std::string& t) {
+        using Info = decltype(recorder_app_.DeleteRequest(t));
+        // If an app is actively using the recorder, use its mounted SD
+        if (recorder_app_.IsActive()) {
+            return recorder_app_.DeleteRequest(t);
+        }
+        // Otherwise mount SD temporarily (same pattern as ListRecordingsForMcp)
+        const bool already_mounted = sd_card_ != nullptr;
+        if (!MountSd()) {
+            Info info;
+            info.error = "SD card mount failed";
+            return info;
+        }
+        auto info = recorder_app_.DeleteRequest(t);
+        if (!already_mounted) UnmountSd();
+        return info;
+    }
+    std::string RecorderDeleteConfirm(const std::string& t, const std::string& tok) {
+        // Same mount pattern for confirm phase
+        if (recorder_app_.IsActive()) {
+            return recorder_app_.DeleteConfirm(t, tok);
+        }
+        const bool already_mounted = sd_card_ != nullptr;
+        if (!MountSd()) return "SD card mount failed";
+        std::string result = recorder_app_.DeleteConfirm(t, tok);
+        if (!already_mounted) UnmountSd();
+        return result;
+    }
     void RetakePhoto() { if (IsPhotoMode()) StartLive(); }
     void FreezePhoto() {
         if (!IsPhotoMode()) return;
