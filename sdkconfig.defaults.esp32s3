@@ -39,3 +39,9 @@ CONFIG_LV_USE_SNAPSHOT=y
 CONFIG_LV_USE_BUILTIN_MALLOC=y
 # CONFIG_LV_USE_CLIB_MALLOC is not set
 CONFIG_LV_MEM_SIZE_KILOBYTES=1024
+
+# Reduce camera DMA buffer to fit in fragmented heap after radio/TLS usage.
+# Default 32768 -> 30720 byte DMA buffer (fails when largest block < 30720).
+# 16384 -> ~15360 byte DMA buffer (fits in 25600 byte largest block).
+# Does not change resolution, format, or image quality; only DMA chunk size.
+CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=16384
