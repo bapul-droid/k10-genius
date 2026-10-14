@@ -1,4 +1,5 @@
 #include "sdkconfig.h"
+#include "display/lcd_display.h"
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -31,6 +32,10 @@ static constexpr bool kConfiguredVFlip = false;
 #endif
 
 Esp32Camera::Esp32Camera(const camera_config_t& config) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    esp_camera_set_psram_mode(false);
+    ESP_LOGI(TAG, "K10 PSRAM DMA disabled for GC2145 RGB565 capture");
+#endif
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_camera_init failed with error 0x%x", err);
@@ -125,19 +130,24 @@ bool Esp32Camera::Capture() {
             memcpy(encode_buf_, current_fb_->buf, data_size);
         }
 
-        // Allocate separate buffer for preview display
-        uint8_t* preview_data =
-            (uint8_t*)heap_caps_malloc(data_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (preview_data != nullptr) {
-            memcpy(preview_data, encode_buf_, data_size);
-            auto display = Board::GetInstance().GetDisplay();
-            if (display != nullptr) {
+        auto display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+            // K10: zero-alloc preview path. The display owns one persistent
+            // RGB565 buffer; we just copy the swapped frame into it.
+            auto* lcd = static_cast<LcdDisplay*>(display);
+            lcd->UpdateK10Preview(encode_buf_, current_fb_->width, current_fb_->height);
+#else
+            // Allocate separate buffer for preview display
+            uint8_t* preview_data =
+                (uint8_t*)heap_caps_malloc(data_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (preview_data != nullptr) {
+                memcpy(preview_data, encode_buf_, data_size);
                 display->SetPreviewImage(std::make_unique<LvglAllocatedImage>(
                     preview_data, data_size, current_fb_->width, current_fb_->height,
                     current_fb_->width * 2, LV_COLOR_FORMAT_RGB565));
-            } else {
-                heap_caps_free(preview_data);
             }
+#endif
         }
     } else if (current_fb_->format == PIXFORMAT_JPEG) {
         // JPEG format preview usually requires decoding, skip preview display for now, just log
@@ -353,4 +363,29 @@ std::expected<std::string, std::string> Esp32Camera::Explain(const std::string& 
              current_fb_->width, current_fb_->height, (int)total_sent, (int)remain_stack_size,
              question.c_str(), result.c_str());
     return result;
+}
+
+
+bool Esp32Camera::SaveJpeg(const char* path) {
+    if (encoder_thread_.joinable()) encoder_thread_.join();
+    if (!current_fb_) return false;
+    FILE* out = fopen(path, "wb");
+    if (!out) { ESP_LOGE(TAG, "Cannot open %s", path); return false; }
+    struct Writer { FILE* file; bool ok; size_t total; } writer{out, true, 0};
+    const auto fmt = current_fb_->format == PIXFORMAT_RGB565 ? V4L2_PIX_FMT_RGB565 :
+                     current_fb_->format == PIXFORMAT_JPEG ? V4L2_PIX_FMT_JPEG : V4L2_PIX_FMT_YUYV;
+    const uint8_t* pixels = current_fb_->format == PIXFORMAT_RGB565 && encode_buf_ ? encode_buf_ : current_fb_->buf;
+    const size_t bytes = current_fb_->format == PIXFORMAT_RGB565 && encode_buf_ ? encode_buf_size_ : current_fb_->len;
+    bool encoded = image_to_jpeg_cb(const_cast<uint8_t*>(pixels), bytes, current_fb_->width, current_fb_->height, fmt, 80,
+        [](void* ctx, size_t, const void* data, size_t len) -> size_t {
+            auto* w = static_cast<Writer*>(ctx);
+            if (data && len && fwrite(data, 1, len, w->file) != len) w->ok = false;
+            w->total += len;
+            return len;
+        }, &writer);
+    bool ok = encoded && writer.ok && writer.total > 0 && fflush(out) == 0;
+    fclose(out);
+    if (!ok) remove(path);
+    ESP_LOGI(TAG, "JPEG %s: %s (%u bytes)", ok ? "saved" : "failed", path, unsigned(writer.total));
+    return ok;
 }

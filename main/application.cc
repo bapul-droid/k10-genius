@@ -1,6 +1,10 @@
 #include "application.h"
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+#include "boards/dfrobot/df-k10/k10_launcher.h"
+#endif
 #ifdef CONFIG_GENIUS_DEVICE_CORE
 #include "genius/command_handler.h"
+#include "genius/genius_v2_client.h"
 #include "genius/native_services.h"
 namespace {
 bool GeniusUrl(const std::string& url) {
@@ -312,6 +316,13 @@ if (audio_service_.IsPlaybackIdle()) {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
+
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    // Genius V2 requires working DNS/TLS. Do not start it while the device
+    // is still in Wi-Fi provisioning or before the network has an IP.
+    GeniusV2Client::GetInstance().Start();
+#endif
+
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
@@ -403,7 +414,19 @@ void Application::ActivationTask() {
     // Check for new firmware version
     CheckNewVersion();
 
-    // Initialize the protocol
+    // Genius V2 owns the unified skill catalog.  Wait until the worker has
+    // registered it into the local MCP registry before the XiaoZhi protocol
+    // starts and performs its first tools/list discovery.
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+    ESP_LOGI(TAG, "Waiting for Genius V2 skill catalog before XiaoZhi protocol startup");
+    if (GeniusV2Client::GetInstance().WaitForCatalog(10000)) {
+        ESP_LOGI(TAG, "Genius V2 skill catalog ready; starting XiaoZhi protocol");
+    } else {
+        ESP_LOGW(TAG, "Genius V2 skill catalog not ready after timeout; starting with native tools");
+    }
+#endif
+
+    // Initialize the protocol only after the Genius catalog is ready.
     InitializeProtocol();
 
     // Signal completion to main loop
@@ -1091,6 +1114,47 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 #endif
 }
 
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+void Application::SetK10Backlight(bool on) {
+    auto& board = Board::GetInstance();
+    board.SetScreenBrightness(on ? 100 : 0);
+}
+
+void Application::WakeK10LcdFromButton() {
+    Schedule([this]() {
+        SetK10Backlight(true);
+        if (GetDeviceState() == kDeviceStateIdle && !k10_launcher_active.load()) {
+            ArmK10LcdSleep();
+        }
+    });
+}
+
+void Application::ArmK10LcdSleep() {
+    if (lcd_sleep_timer_handle_ == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void* arg) {
+            auto* app = static_cast<Application*>(arg);
+            app->Schedule([app]() {
+                if (app->GetDeviceState() == kDeviceStateIdle) {
+                    if (k10_launcher_active.load()) {
+                        app->SetK10Backlight(true);
+                        app->ArmK10LcdSleep();
+                    } else {
+                        app->SetK10Backlight(false);
+                    }
+                }
+            });
+        };
+        args.arg = this;
+        args.name = "k10_lcd_sleep";
+        ESP_ERROR_CHECK(esp_timer_create(&args, &lcd_sleep_timer_handle_));
+    }
+
+    esp_timer_stop(lcd_sleep_timer_handle_);
+    ESP_ERROR_CHECK(esp_timer_start_once(lcd_sleep_timer_handle_, 30LL * 1000 * 1000));
+}
+#endif
+
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
@@ -1102,6 +1166,18 @@ void Application::HandleStateChangedEvent() {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    if (new_state == kDeviceStateIdle) {
+        SetK10Backlight(true);
+        ArmK10LcdSleep();
+    } else {
+        if (lcd_sleep_timer_handle_ != nullptr) {
+            esp_timer_stop(lcd_sleep_timer_handle_);
+        }
+        SetK10Backlight(true);
+    }
+#endif
 
     switch (new_state) {
         case kDeviceStateUnknown:
@@ -1671,6 +1747,12 @@ void Application::PublishGeniusLifecycle(const char* state) {
     }
     if (protocol_)
         protocol_->SendDeviceEvent(body);
+
+    GeniusV2Client::GetInstance().SendDeviceEvent(
+        "playback",
+        body
+    );
+
 #endif
 }
 void Application::FinishGeniusAlert(bool success) {

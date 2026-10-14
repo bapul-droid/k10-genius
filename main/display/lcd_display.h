@@ -31,6 +31,11 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
+    lv_obj_t* k10_camera_overlay_ = nullptr;
+    std::unique_ptr<LvglImage> k10_camera_image_ = nullptr;
+    lv_obj_t* k10_camera_photo_ = nullptr;
+    lv_obj_t* k10_camera_status_label_ = nullptr;
+    bool k10_camera_mode_ = false;
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
 
     void InitializeLcdThemes();
@@ -48,12 +53,16 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
+    void SetK10CameraMode(bool enabled);
+    void SetK10CameraStatus(const char* message);
+    void UpdateK10Preview(const uint8_t* rgb565, int width, int height);
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
 
     // Set whether to hide chat messages/subtitles
     virtual void SetHideSubtitle(bool hide) override;
+    bool SetRotation(int degrees);
 };
 
 // SPI LCD display

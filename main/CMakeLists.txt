@@ -892,6 +892,11 @@ file(GLOB BOARD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/*.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_DIR}/*.c
 )
+if(CONFIG_BOARD_TYPE_DF_K10)
+    list(APPEND BOARD_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/boards/dfrobot/df-k10/k10_legacy_camera.cc
+    )
+endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
 # Select one audio engine for each chip family
@@ -1087,7 +1092,7 @@ if(CONFIG_GENIUS_DEVICE_CORE)
         "genius/media_decoder.cc"
         "genius/native_services.cc"
         "genius/command_handler.cc"
-        "genius/device_channel.cc"
+        "genius/genius_v2_client.cc"
     )
 endif()
 idf_component_register(SRCS ${SOURCES}

@@ -42,6 +42,9 @@ private:
     std::string explain_url_;
     std::string explain_token_;
     std::thread encoder_thread_;
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    Camera* legacy_camera_ = nullptr;
+#endif
 
 public:
     EspVideo(const esp_video_init_config_t& config);
@@ -49,6 +52,7 @@ public:
 
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture();
+    bool SaveK10Jpeg(const char* path);
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;
     virtual bool SetVFlip(bool enabled) override;

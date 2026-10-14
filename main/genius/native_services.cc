@@ -163,6 +163,7 @@ bool GeniusNativeServices::SetAlarm(const cJSON* payload, std::string& error) {
     }
     alarm.repeat = repeat;
     auto now = time(nullptr);
+
     if (now > 1700000000 && alarm.due <= now) {
         error = "Alarm harus dijadwalkan di masa depan.";
         return false;

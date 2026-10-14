@@ -11,3 +11,4 @@ idf_build_set_property(MINIMAL_BUILD ON)
 
 set(PROJECT_VER "2.5.0")
 project(xiaozhi)
+
