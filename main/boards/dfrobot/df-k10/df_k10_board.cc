@@ -749,7 +749,7 @@ public:
         return camera_;
     }
 
-    void DeinitCamera() {
+    virtual void DeinitCamera() override {
         std::lock_guard<std::mutex> lock(camera_mutex_);
         if (camera_) {
             LogHeap("camera deinit: before");

@@ -74,6 +74,7 @@ public:
     virtual Display* GetDisplay();
     virtual void SetScreenBrightness(uint8_t brightness) {}
     virtual Camera* GetCamera();
+    virtual void DeinitCamera() {}
     virtual NetworkInterface* GetNetwork() = 0;
     virtual void StartNetwork() = 0;
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) { (void)callback; }

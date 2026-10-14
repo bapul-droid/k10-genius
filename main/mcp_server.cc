@@ -113,6 +113,9 @@ void McpServer::AddCommonTools() {
                 }
                 auto question = properties["question"].value<std::string>();
                 auto result = camera->Explain(question);
+                // Deinitialize camera after use to free internal SRAM for audio/TLS.
+                // The camera will be lazily re-initialized on next use.
+                board.DeinitCamera();
                 if (!result) {
                     return std::unexpected(std::move(result.error()));
                 }
