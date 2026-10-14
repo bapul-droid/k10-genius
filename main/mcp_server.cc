@@ -88,6 +88,37 @@ void McpServer::AddCommonTools() {
                 });
     }
 
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+    // K10 lazy camera: register tool unconditionally. The camera hardware is
+    // initialized on first capture (see Df_K10Board::GetCamera) to preserve
+    // internal SRAM for audio/TLS during normal operation.
+    AddTool("self.camera.take_photo",
+            "Always remember you have a camera. If the user asks you to see something, use "
+            "this tool to take a photo and then explain it.\n"
+            "Args:\n"
+            "  `question`: The question that you want to ask about the photo.\n"
+            "Return:\n"
+            "  A JSON object that provides the photo information.",
+            PropertyList({Property("question", kPropertyTypeString)}),
+            [&board](const PropertyList& properties) -> ToolResult {
+                // Lower the priority to do the camera capture
+                TaskPriorityReset priority_reset(1);
+
+                auto camera = board.GetCamera();
+                if (!camera) {
+                    return std::unexpected("Camera initialization failed");
+                }
+                if (!camera->Capture()) {
+                    return std::unexpected("Failed to capture photo");
+                }
+                auto question = properties["question"].value<std::string>();
+                auto result = camera->Explain(question);
+                if (!result) {
+                    return std::unexpected(std::move(result.error()));
+                }
+                return std::move(*result);
+            });
+#else
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
@@ -113,6 +144,7 @@ void McpServer::AddCommonTools() {
                     return std::move(*result);
                 });
     }
+#endif
 #endif
 
     // Restore the original tools list to the end of the tools list
@@ -342,6 +374,11 @@ void McpServer::ParseCapabilities(const cJSON* capabilities) {
         auto url = cJSON_GetObjectItem(vision, "url");
         auto token = cJSON_GetObjectItem(vision, "token");
         if (cJSON_IsString(url)) {
+#ifdef CONFIG_BOARD_TYPE_DF_K10
+            // K10: vision URL is set lazily in Df_K10Board::GetCamera() on first
+            // camera use. Do not initialize the camera here to preserve SRAM.
+            ESP_LOGI(TAG, "K10 camera vision deferred to first use");
+#else
             auto camera = Board::GetInstance().GetCamera();
             if (camera) {
                 std::string url_str = std::string(url->valuestring);
@@ -349,24 +386,9 @@ void McpServer::ParseCapabilities(const cJSON* capabilities) {
                 if (cJSON_IsString(token)) {
                     token_str = std::string(token->valuestring);
                 }
-#ifdef CONFIG_BOARD_TYPE_DF_K10
-                // K10 vision is resolved by Genius V2. Keep XiaoZhi's camera tool and
-                // conversational flow, but send the captured JPEG to Genius visual search
-                // instead of the upstream image-explain endpoint.
-                Settings genius_settings("genius");
-                std::string genius_domain = genius_settings.GetString("domain");
-                if (genius_domain.empty()) {
-                    genius_domain = "genius.minjiai.my.id";
-                }
-                const std::string genius_vision_url =
-                    "https://" + genius_domain + "/api/vision/search";
-                ESP_LOGI(TAG, "K10 camera vision routed to Genius: %s",
-                         genius_vision_url.c_str());
-                camera->SetExplainUrl(genius_vision_url, "");
-#else
                 camera->SetExplainUrl(url_str, token_str);
-#endif
             }
+#endif
         }
     }
 }

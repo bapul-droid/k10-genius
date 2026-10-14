@@ -27,6 +27,9 @@
 
 #include "esp_io_expander_tca95xx_16bit.h"
 
+#include <mutex>
+#include <esp_heap_caps.h>
+
 #define TAG "DF-K10"
 
 class Df_K10Board : public WifiBoard {
@@ -36,7 +39,8 @@ private:
     LcdDisplay *display_;
     button_handle_t btn_a;
     button_handle_t btn_b;
-    EspVideo* camera_;
+    EspVideo* camera_ = nullptr;
+    std::mutex camera_mutex_;
 
     button_driver_t* btn_a_driver_ = nullptr;
     button_driver_t* btn_b_driver_ = nullptr;
@@ -468,6 +472,13 @@ private:
         }, this);
     }
 
+    void LogHeap(const char* context) {
+        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "Heap [%s]: free_internal=%u largest_block=%u",
+                 context, (unsigned)free_internal, (unsigned)largest_block);
+    }
+
     void InitializeCamera() {
         static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
             .data_width = CAM_CTLR_DATA_WIDTH_8,
@@ -690,7 +701,8 @@ public:
         InitializeIli9341Display();
         InitializeButtons();
         InitializeIot();
-        InitializeCamera();
+        // Camera is initialized lazily on first GetCamera() call to preserve
+        // internal SRAM for audio/TLS. See GetCamera() below.
         InitializeSensors();
     }
 
@@ -722,7 +734,29 @@ public:
     }
 
     virtual Camera* GetCamera() override {
+        std::lock_guard<std::mutex> lock(camera_mutex_);
+        if (!camera_) {
+            LogHeap("camera init: before");
+            InitializeCamera();
+            LogHeap("camera init: after");
+            if (camera_) {
+                // K10 vision is resolved by Genius. Set the explain URL here
+                // so Alexa Vision works on first use without boot-time init.
+                // (Settings API is available via genius/native_services.h)
+                camera_->SetExplainUrl("https://genius.minjiai.my.id/api/vision/search", "");
+            }
+        }
         return camera_;
+    }
+
+    void DeinitCamera() {
+        std::lock_guard<std::mutex> lock(camera_mutex_);
+        if (camera_) {
+            LogHeap("camera deinit: before");
+            delete camera_;
+            camera_ = nullptr;
+            LogHeap("camera deinit: after");
+        }
     }
 
     void SetScreenBrightness(uint8_t brightness) {

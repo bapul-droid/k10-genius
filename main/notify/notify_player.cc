@@ -9,6 +9,7 @@
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_heap_caps.h>
 #include <freertos/stream_buffer.h>
 #include <freertos/idf_additions.h>
 
@@ -397,6 +398,12 @@ void NotifyPlayer::WorkerTask() {
         audio_url = audio_url_;
         playback_id = playback_id_;
         generation = audio_generation_;
+    }
+    if (IsGeniusLiveMediaUrl(audio_url)) {
+        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "Heap [Genius live playback start]: free_internal=%u largest_block=%u",
+                 (unsigned)free_internal, (unsigned)largest_block);
     }
     bool success = false;
     auto demuxer = std::make_unique<OggDemuxer>();
