@@ -45,3 +45,10 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=1024
 # 16384 -> ~15360 byte DMA buffer (fits in 25600 byte largest block).
 # Does not change resolution, format, or image quality; only DMA chunk size.
 CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=16384
+  
+# Diet mbedTLS ala Franklnir/SCIG 2026-10-15: hemat belasan KB SRAM per koneksi TLS, tepat sasaran esp-aes allocation failure saat streaming.  
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384  
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048  
+CONFIG_MBEDTLS_HARDWARE_AES=n  
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n  
+CONFIG_MBEDTLS_SSL_RENEGOTIATION=n  
