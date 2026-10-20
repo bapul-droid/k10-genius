@@ -323,6 +323,9 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 
 LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
+#if CONFIG_BOARD_TYPE_DF_K10
+    { DisplayLockGuard lock(this); muse_lvgl_stop(muse_avatar_); }
+#endif
 
     // Clean up GIF controller
     if (gif_controller_) {
@@ -407,6 +410,8 @@ bool LcdDisplay::SetRotation(int degrees) {
 
     DisplayLockGuard lock(this);
     lv_display_set_rotation(display_, rotation);
+    // Paksa render ulang penuh: tanpa ini strip tepi tidak ke-repaint (partial buffer).
+    lv_obj_invalidate(lv_screen_active());
     ESP_LOGI(TAG, "Display rotation set to %d degrees", degrees);
     return true;
 }
@@ -922,6 +927,13 @@ void LcdDisplay::SetupUI() {
     emoji_image_ = lv_img_create(emoji_box_);
     lv_obj_center(emoji_image_);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+#if CONFIG_BOARD_TYPE_DF_K10
+    // Muse pixel avatar with happy transition; original emoji remains intact as fallback.
+    uint32_t bg = lv_color_to_u32(lvgl_theme->background_color()) & 0xFFFFFF;
+    if (muse_lvgl_start(muse_avatar_, emoji_box_, bg)) {
+        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
 
     /* Middle layer: preview_image_ - centered display */
     preview_image_ = lv_image_create(screen);
@@ -1091,9 +1103,11 @@ void LcdDisplay::SetK10CameraStatus(const char* message) {
         lv_obj_set_style_bg_color(k10_camera_status_label_, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(k10_camera_status_label_, LV_OPA_COVER, 0);
         lv_obj_set_style_text_color(k10_camera_status_label_, lv_color_white(), 0);
-        lv_obj_align(k10_camera_status_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
     }
+    lv_obj_update_layout(k10_camera_overlay_);
+    lv_obj_align(k10_camera_status_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_label_set_text(k10_camera_status_label_, message);
+    lv_obj_move_foreground(k10_camera_status_label_);
     lv_obj_move_foreground(k10_camera_overlay_);
 }
 
@@ -1145,8 +1159,10 @@ void LcdDisplay::UpdateK10Preview(const uint8_t* rgb565, int width, int height) 
         uint8_t* buf = (uint8_t*)heap_caps_malloc(need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!buf) return;
         memcpy(buf, rgb565, need);
-        lv_obj_clean(k10_camera_overlay_);
-        k10_camera_status_label_ = nullptr;
+        if (k10_camera_photo_) {
+            lv_obj_delete(k10_camera_photo_);
+            k10_camera_photo_ = nullptr;
+        }
         k10_camera_image_ = std::make_unique<LvglAllocatedImage>(
             buf, need, width, height, width * 2, LV_COLOR_FORMAT_RGB565);
         auto* new_img = static_cast<LvglAllocatedImage*>(k10_camera_image_.get());
@@ -1156,13 +1172,37 @@ void LcdDisplay::UpdateK10Preview(const uint8_t* rgb565, int width, int height) 
         }
         k10_camera_photo_ = lv_image_create(k10_camera_overlay_);
         lv_image_set_src(k10_camera_photo_, k10_camera_image_->image_dsc());
-        int zoom_w = lv_obj_get_width(k10_camera_overlay_) * 256 / width;
-        int zoom_h = lv_obj_get_height(k10_camera_overlay_) * 256 / height;
-        lv_image_set_scale(k10_camera_photo_, zoom_w > zoom_h ? zoom_w : zoom_h);
+        lv_obj_update_layout(k10_camera_overlay_);
+        int overlay_w = lv_obj_get_width(k10_camera_overlay_);
+        int overlay_h = lv_obj_get_height(k10_camera_overlay_);
+        if (overlay_w <= 0) overlay_w = width_;
+        if (overlay_h <= 0) overlay_h = height_;
+        int zoom_w = overlay_w * 256 / width;
+        int zoom_h = overlay_h * 256 / height;
+        int zoom = zoom_w > zoom_h ? zoom_w : zoom_h;
+        if (zoom <= 0) zoom = 256;
+        lv_image_set_scale(k10_camera_photo_, zoom);
         lv_obj_center(k10_camera_photo_);
+        if (k10_camera_status_label_) {
+            lv_obj_move_foreground(k10_camera_status_label_);
+        }
     } else {
         memcpy(alloc_img->data(), rgb565, need);
-        if (k10_camera_photo_) lv_obj_invalidate(k10_camera_photo_);
+        if (k10_camera_photo_) {
+            if (lv_image_get_scale(k10_camera_photo_) <= 0) {
+                lv_obj_update_layout(k10_camera_overlay_);
+                int overlay_w = lv_obj_get_width(k10_camera_overlay_);
+                int overlay_h = lv_obj_get_height(k10_camera_overlay_);
+                if (overlay_w <= 0) overlay_w = width_;
+                if (overlay_h <= 0) overlay_h = height_;
+                int zoom_w = overlay_w * 256 / width;
+                int zoom_h = overlay_h * 256 / height;
+                int zoom = zoom_w > zoom_h ? zoom_w : zoom_h;
+                if (zoom <= 0) zoom = 256;
+                lv_image_set_scale(k10_camera_photo_, zoom);
+            }
+            lv_obj_invalidate(k10_camera_photo_);
+        }
     }
     lv_obj_move_foreground(k10_camera_overlay_);
 }
@@ -1188,9 +1228,16 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         const auto* dsc = k10_camera_image_->image_dsc();
         lv_image_set_src(photo, dsc);
         if (dsc->header.w && dsc->header.h) {
-            int zoom_w = lv_obj_get_width(k10_camera_overlay_) * 256 / dsc->header.w;
-            int zoom_h = lv_obj_get_height(k10_camera_overlay_) * 256 / dsc->header.h;
-            lv_image_set_scale(photo, zoom_w > zoom_h ? zoom_w : zoom_h);
+            lv_obj_update_layout(k10_camera_overlay_);
+            int overlay_w = lv_obj_get_width(k10_camera_overlay_);
+            int overlay_h = lv_obj_get_height(k10_camera_overlay_);
+            if (overlay_w <= 0) overlay_w = width_;
+            if (overlay_h <= 0) overlay_h = height_;
+            int zoom_w = overlay_w * 256 / dsc->header.w;
+            int zoom_h = overlay_h * 256 / dsc->header.h;
+            int zoom = zoom_w > zoom_h ? zoom_w : zoom_h;
+            if (zoom <= 0) zoom = 256;
+            lv_image_set_scale(photo, zoom);
         }
         lv_obj_center(photo);
         lv_obj_move_foreground(k10_camera_overlay_);
@@ -1245,6 +1292,11 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
         }
         return;
     }
+#if CONFIG_BOARD_TYPE_DF_K10
+    if (muse_avatar_.canvas && role && strcmp(role, "user") == 0 && content && content[0] != '\0') {
+        muse_avatar_.awaiting_reply = true;
+    }
+#endif
     lv_anim_delete(chat_message_label_, nullptr);
     lv_label_set_text(chat_message_label_, content);
     // Show bottom_bar_ only when there is content (and subtitle is not globally hidden)
@@ -1277,6 +1329,13 @@ void LcdDisplay::ClearChatMessages() {
 #endif
 
 void LcdDisplay::SetEmotion(const char* emotion) {
+#if CONFIG_BOARD_TYPE_DF_K10
+    if (muse_avatar_.canvas && emotion &&
+        (strcmp(emotion, "happy") == 0 || strcmp(emotion, "smile") == 0 || strcmp(emotion, "laugh") == 0)) {
+        DisplayLockGuard lock(this);
+        muse_lvgl_trigger_happy(muse_avatar_);
+    }
+#endif
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!",
                  emotion);
@@ -1387,9 +1446,10 @@ void LcdDisplay::SetTheme(Theme* theme) {
         lv_obj_set_style_text_font(network_label_, icon_font, 0);
     }
 
-    // Set parent text color
+    // Set parent text color and background color
     lv_obj_set_style_text_font(screen, text_font, 0);
     lv_obj_set_style_text_color(screen, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_bg_color(screen, lvgl_theme->background_color(), 0);
 
     // Set background image
     if (lvgl_theme->background_image() != nullptr) {
@@ -1398,6 +1458,10 @@ void LcdDisplay::SetTheme(Theme* theme) {
         lv_obj_set_style_bg_image_src(container_, nullptr, 0);
         lv_obj_set_style_bg_color(container_, lvgl_theme->background_color(), 0);
     }
+#if CONFIG_BOARD_TYPE_DF_K10
+    uint32_t bg = lv_color_to_u32(lvgl_theme->background_color()) & 0xFFFFFF;
+    muse_lvgl_set_bg_color(muse_avatar_, bg);
+#endif
 
     // Update top bar background color with 50% opacity
     if (top_bar_ != nullptr) {

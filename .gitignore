@@ -18,3 +18,9 @@ main/mmap_generate_emoji.h
 *.bin
 mmap_generate_*.h
 .clangd
+*.log
+cap_*.py
+scratch_*
+k10_audio_codec.cc
+lcd_display.cc
+main/display/cute_face.*

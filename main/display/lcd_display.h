@@ -3,6 +3,9 @@
 
 #include "gif/lvgl_gif.h"
 #include "lvgl_display.h"
+#if CONFIG_BOARD_TYPE_DF_K10
+#include "muse_lvgl.h"
+#endif
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -28,6 +31,9 @@ protected:
     lv_obj_t* emoji_image_ = nullptr;
     std::unique_ptr<LvglGif> gif_controller_ = nullptr;
     lv_obj_t* emoji_box_ = nullptr;
+#if CONFIG_BOARD_TYPE_DF_K10
+    MuseLvgl muse_avatar_;
+#endif
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
