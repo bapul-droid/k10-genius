@@ -13,9 +13,15 @@ struct MuseLvgl {
     int last_mode = -1;
     uint32_t mode_started_ms = 0;
     uint32_t happy_until_ms = 0;
+    uint32_t thinking_until_ms = 0;
+    uint32_t error_until_ms = 0;
 };
 
 bool muse_lvgl_start(MuseLvgl& avatar, lv_obj_t* parent, uint32_t bg_color = 0x000000);
 void muse_lvgl_stop(MuseLvgl& avatar);
 void muse_lvgl_set_bg_color(MuseLvgl& avatar, uint32_t bg_rgb);
 void muse_lvgl_trigger_happy(MuseLvgl& avatar, uint32_t duration_ms = 1800);
+void muse_lvgl_trigger_thinking(MuseLvgl& avatar, uint32_t duration_ms = 15000);
+void muse_lvgl_trigger_error(MuseLvgl& avatar, uint32_t duration_ms = 3000);
+void muse_lvgl_clear_thinking(MuseLvgl& avatar);
+void muse_lvgl_clear_error(MuseLvgl& avatar);

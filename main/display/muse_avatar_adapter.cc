@@ -4,9 +4,10 @@ MuseAvatarState MuseAvatarStateFromDeviceState(DeviceState state) {
     switch (state) {
         case kDeviceStateStarting:
             return MuseAvatarState::Boot;
+        case kDeviceStateConnecting:
+            return MuseAvatarState::Thinking;
         case kDeviceStateIdle:
         case kDeviceStateWifiConfiguring:
-        case kDeviceStateConnecting:
         case kDeviceStateNotifying:
         case kDeviceStateUpgrading:
         case kDeviceStateActivating:

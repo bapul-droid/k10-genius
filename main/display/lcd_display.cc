@@ -1295,6 +1295,7 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
 #if CONFIG_BOARD_TYPE_DF_K10
     if (muse_avatar_.canvas && role && strcmp(role, "user") == 0 && content && content[0] != '\0') {
         muse_avatar_.awaiting_reply = true;
+        muse_lvgl_trigger_thinking(muse_avatar_);
     }
 #endif
     lv_anim_delete(chat_message_label_, nullptr);
@@ -1318,6 +1319,11 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
 
 void LcdDisplay::ClearChatMessages() {
     DisplayLockGuard lock(this);
+#if CONFIG_BOARD_TYPE_DF_K10
+    if (muse_avatar_.canvas) {
+        muse_lvgl_clear_thinking(muse_avatar_);
+    }
+#endif
     // In non-wechat mode, just clear the chat message label and hide the bar
     if (chat_message_label_ != nullptr) {
         lv_label_set_text(chat_message_label_, "");
@@ -1328,12 +1334,47 @@ void LcdDisplay::ClearChatMessages() {
 }
 #endif
 
+void LcdDisplay::SetStatus(const char* status) {
+    LvglDisplay::SetStatus(status);
+#if CONFIG_BOARD_TYPE_DF_K10
+    if (muse_avatar_.canvas && status) {
+        DisplayLockGuard lock(this);
+        auto matches_sub = [](const char* text, const char* sub) -> bool {
+            if (!text || !sub) return false;
+            size_t sub_len = strlen(sub);
+            for (; *text; text++) {
+                if (strncasecmp(text, sub, sub_len) == 0) return true;
+            }
+            return false;
+        };
+
+        if (strcasecmp(status, Lang::Strings::ERROR) == 0 ||
+            matches_sub(status, "error") || matches_sub(status, "fail") ||
+            matches_sub(status, "offline") || matches_sub(status, "gagal")) {
+            muse_lvgl_trigger_error(muse_avatar_);
+        } else if (matches_sub(status, "think") || matches_sub(status, "wait") ||
+                   matches_sub(status, "connect") || matches_sub(status, "menunggu")) {
+            muse_lvgl_trigger_thinking(muse_avatar_);
+        }
+    }
+#endif
+}
+
 void LcdDisplay::SetEmotion(const char* emotion) {
 #if CONFIG_BOARD_TYPE_DF_K10
-    if (muse_avatar_.canvas && emotion &&
-        (strcmp(emotion, "happy") == 0 || strcmp(emotion, "smile") == 0 || strcmp(emotion, "laugh") == 0)) {
+    if (muse_avatar_.canvas && emotion) {
         DisplayLockGuard lock(this);
-        muse_lvgl_trigger_happy(muse_avatar_);
+        if (strcmp(emotion, "happy") == 0 || strcmp(emotion, "smile") == 0 || strcmp(emotion, "laugh") == 0) {
+            muse_lvgl_trigger_happy(muse_avatar_);
+        } else if (strcmp(emotion, "cancel") == 0 || strcmp(emotion, "warning") == 0 ||
+                   strcmp(emotion, "cloud_off") == 0 || strcmp(emotion, "error") == 0 ||
+                   strcmp(emotion, "sad") == 0 || strcmp(emotion, "cry") == 0) {
+            muse_lvgl_trigger_error(muse_avatar_);
+        } else if (strcmp(emotion, "thinking") == 0 || strcmp(emotion, "search") == 0) {
+            muse_lvgl_trigger_thinking(muse_avatar_);
+        } else if (strcmp(emotion, "neutral") == 0) {
+            muse_lvgl_clear_error(muse_avatar_);
+        }
     }
 #endif
     if (!setup_ui_called_) {
