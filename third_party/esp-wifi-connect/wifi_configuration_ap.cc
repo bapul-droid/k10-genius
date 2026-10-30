@@ -425,11 +425,13 @@ void WifiConfigurationAp::StartWebServer()
                 cJSON_GetObjectItemCaseSensitive(json, "genius_domain");
 
             if (cJSON_IsString(genius_domain_item) &&
-                genius_domain_item->valuestring != nullptr &&
-                this_->on_provisioning_value_) {
-                this_->on_provisioning_value_(
-                    "genius_domain",
-                    genius_domain_item->valuestring);
+                genius_domain_item->valuestring != nullptr) {
+                this_->genius_domain_ = genius_domain_item->valuestring;
+                if (this_->on_provisioning_value_) {
+                    this_->on_provisioning_value_(
+                        "genius_domain",
+                        genius_domain_item->valuestring);
+                }
             }
             cJSON_Delete(json);
             // 设置成功响应
@@ -549,6 +551,9 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
             cJSON_AddBoolToObject(json, "show_ota_config", this_->show_ota_config_);
             cJSON_AddBoolToObject(json, "show_sleep_config", this_->show_sleep_config_);
+            if (!this_->genius_domain_.empty()) {
+                cJSON_AddStringToObject(json, "genius_domain", this_->genius_domain_.c_str());
+            }
 
             // 发送JSON响应
             char *json_str = cJSON_PrintUnformatted(json);
@@ -661,6 +666,15 @@ void WifiConfigurationAp::StartWebServer()
                 err = nvs_set_u8(nvs, "sleep_mode", this_->sleep_mode_ ? 1 : 0);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to save sleep_mode: %d", err);
+                }
+            }
+
+            // 保存 Genius Domain
+            cJSON *genius_domain = cJSON_GetObjectItem(json, "genius_domain");
+            if (cJSON_IsString(genius_domain) && genius_domain->valuestring) {
+                this_->genius_domain_ = genius_domain->valuestring;
+                if (this_->on_provisioning_value_) {
+                    this_->on_provisioning_value_("genius_domain", genius_domain->valuestring);
                 }
             }
 

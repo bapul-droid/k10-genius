@@ -1350,9 +1350,18 @@ def _configure_build(
     sdkconfig = Path("sdkconfig")
     sdkconfig_old = Path("sdkconfig.old")
     if sdkconfig.exists():
-        if sdkconfig_old.exists():
-            sdkconfig_old.unlink()
-        sdkconfig.replace(sdkconfig_old)
+        try:
+            if sdkconfig_old.exists():
+                sdkconfig_old.unlink()
+            sdkconfig.replace(sdkconfig_old)
+        except OSError:
+            try:
+                import shutil
+                if sdkconfig.stat().st_size > 0:
+                    shutil.copyfile(sdkconfig, sdkconfig_old)
+                sdkconfig.write_text("", encoding="utf-8")
+            except OSError:
+                pass
 
     fragment = Path("build/xiaozhi-build.sdkconfig.defaults")
     fragment.parent.mkdir(parents=True, exist_ok=True)

@@ -68,6 +68,9 @@ struct WifiManagerConfig {
     // The WiFi component only transports key/value pairs; interpretation and
     // persistence belong to the application.
     std::function<void(const std::string&, const std::string&)> provisioning_value_callback;
+
+    // Optional domain for provisioning portal pre-population.
+    std::string genius_domain;
 };
 
 /**

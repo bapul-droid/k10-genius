@@ -9,7 +9,10 @@
                 "CONFIG_SPIRAM_MODE_OCT=y",
                 "CONFIG_CAMERA_GC2145=y",
                 "CONFIG_CAMERA_GC2145_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
-                "CONFIG_CAMERA_GC2145_DVP_YUV422_YUYV_320X240_13FPS=y"
+                "CONFIG_CAMERA_GC2145_DVP_YUV422_YUYV_320X240_13FPS=y",
+                "CONFIG_LANGUAGE_ID_ID=y",
+                "CONFIG_USE_AFE_WAKE_WORD=y",
+                "CONFIG_SR_WN_WN9_ALEXA=y"
             ]
         }
     ]

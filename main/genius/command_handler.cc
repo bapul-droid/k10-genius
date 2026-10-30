@@ -2,6 +2,8 @@
 #include <cstring>
 #include "application.h"
 #include "native_services.h"
+#include "board.h"
+#include "wifi_board.h"
 
 namespace {
 bool Text(const cJSON* object, const char* name, size_t limit, std::string& output,
@@ -59,6 +61,13 @@ GeniusCommandResult DispatchGeniusCommand(const cJSON* command) {
         std::string id;
         if (Text(payload, "alarm_id", 48, id, true))
             result.accepted = GeniusNativeServices::GetInstance().CancelAlarm(id, result.error);
+    } else if (action == "configure_wifi" || action == "reconfigure_wifi" ||
+               action == "wifi_config" || action == "enter_wifi_config") {
+        result.recognized = true;
+        app.Schedule([]() {
+            Board::GetInstance().EnterWifiConfigMode();
+        });
+        result.accepted = true;
     }
     if (result.recognized && !result.accepted && result.error.empty())
         result.error = "Device busy or invalid command";

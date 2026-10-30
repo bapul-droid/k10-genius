@@ -111,8 +111,13 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
         live_stream_generation_ = 0;
     }
 
-    BaseType_t created = xTaskCreate(WorkerEntry, "notify_http", kNotifyTaskStackSize, this,
-                                     kNotifyTaskPriority, &task_handle_);
+    BaseType_t created = xTaskCreateWithCaps(WorkerEntry, "notify_http", kNotifyTaskStackSize, this,
+                                             kNotifyTaskPriority, &task_handle_,
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (created != pdPASS) {
+        created = xTaskCreate(WorkerEntry, "notify_http", kNotifyTaskStackSize, this,
+                              kNotifyTaskPriority, &task_handle_);
+    }
     if (created != pdPASS) {
         ESP_LOGE(TAG, "Failed to create notification HTTP task");
         std::lock_guard<std::mutex> lock(mutex_);
@@ -467,9 +472,15 @@ void NotifyPlayer::WorkerTask() {
             ESP_LOGE(TAG, "Failed to allocate PSRAM media buffer");
             packet_error = true;
         } else {
-            BaseType_t created = xTaskCreate(ProducerEntry, "notify_net", kProducerTaskStackSize,
-                                             this, kNotifyTaskPriority + 1,
-                                             &producer_task_handle_);
+            BaseType_t created = xTaskCreateWithCaps(ProducerEntry, "notify_net", kProducerTaskStackSize,
+                                                     this, kNotifyTaskPriority + 1,
+                                                     &producer_task_handle_,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (created != pdPASS) {
+                created = xTaskCreate(ProducerEntry, "notify_net", kProducerTaskStackSize,
+                                      this, kNotifyTaskPriority + 1,
+                                      &producer_task_handle_);
+            }
             if (created != pdPASS) {
                 ESP_LOGE(TAG, "Failed to create network producer");
                 packet_error = true;

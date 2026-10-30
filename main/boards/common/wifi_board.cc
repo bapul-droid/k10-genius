@@ -59,6 +59,12 @@ void WifiBoard::StartNetwork() {
     config.show_ota_config = true;
     config.show_sleep_config = true;
 
+    Settings settings("genius");
+    config.genius_domain = settings.GetString("domain");
+    if (config.genius_domain.empty()) {
+        config.genius_domain = "genius.minjiai.my.id";
+    }
+
     // Set a DHCP hostname so the router shows a friendly name instead of "espressif".
     // Uses the same "<prefix>-<last 2 MAC bytes>" scheme as the config AP SSID.
     uint8_t mac[6];

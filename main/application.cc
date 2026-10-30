@@ -21,6 +21,7 @@ bool GeniusUrl(const std::string& url) {
 #include "assets/lang_config.h"
 #include "audio_codec.h"
 #include "board.h"
+#include "wifi_board.h"
 #include "display.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
@@ -782,6 +783,25 @@ void Application::InitializeProtocol() {
                     display->AddTextGlyphs(glyphs, bpp);
                     display->SetChatMessage("user", message.c_str());
                 });
+
+                std::string stt_text = text->valuestring;
+                std::string lower_stt;
+                lower_stt.reserve(stt_text.size());
+                for (char c : stt_text) {
+                    lower_stt += (c >= 'A' && c <= 'Z') ? (c + 32) : c;
+                }
+                while (!lower_stt.empty() && (lower_stt.back() == '.' || lower_stt.back() == '?' || lower_stt.back() == '!')) {
+                    lower_stt.pop_back();
+                }
+                if (lower_stt == "masuk mode wifi" || lower_stt == "masuk ke mode wifi" ||
+                    lower_stt == "pengaturan wifi" || lower_stt == "buka pengaturan wifi" ||
+                    lower_stt == "mode wifi" || lower_stt == "reconfigure wifi" ||
+                    lower_stt == "enter wifi mode" || lower_stt == "wifi config") {
+                    ESP_LOGI(TAG, "Voice command matched in STT: '%s' -> Entering WiFi config mode", stt_text.c_str());
+                    Schedule([]() {
+                        Board::GetInstance().EnterWifiConfigMode();
+                    });
+                }
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
@@ -802,6 +822,11 @@ void Application::InitializeProtocol() {
                 if (strcmp(command->valuestring, "reboot") == 0) {
                     // Do a reboot if user requests a OTA update
                     Schedule([this]() { Reboot(); });
+                } else if (strcmp(command->valuestring, "reconfigure_wifi") == 0 ||
+                           strcmp(command->valuestring, "wifi_config") == 0) {
+                    Schedule([]() {
+                        Board::GetInstance().EnterWifiConfigMode();
+                    });
                 } else {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }

@@ -37,6 +37,7 @@ public:
     void SetLanguage(const std::string &language);
     void SetShowOtaConfig(bool show) { show_ota_config_ = show; }
     void SetShowSleepConfig(bool show) { show_sleep_config_ = show; }
+    void SetGeniusDomain(const std::string& domain) { genius_domain_ = domain; }
     void Start();
     void Stop();
 #if !CONFIG_IDF_TARGET_ESP32P4
@@ -80,6 +81,7 @@ private:
     bool sleep_mode_;
     bool show_ota_config_ = false;
     bool show_sleep_config_ = false;
+    std::string genius_domain_;
 
     // Callbacks
     std::function<void()> on_exit_requested_;

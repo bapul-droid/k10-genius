@@ -249,6 +249,7 @@ void WifiManager::StartConfigAp() {
     config_ap_->SetLanguage(config_.language);
     config_ap_->SetShowOtaConfig(config_.show_ota_config);
     config_ap_->SetShowSleepConfig(config_.show_sleep_config);
+    config_ap_->SetGeniusDomain(config_.genius_domain);
 
     config_ap_->OnProvisioningValue(
         [this](const std::string& key, const std::string& value) {

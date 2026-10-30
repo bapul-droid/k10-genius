@@ -535,11 +535,12 @@
                     <input type="password" id="password" name="password">
                 </p>
                 <p>
-                    <label for="genius_domain">Genius Domain:</label>
+                    <label for="genius_domain" data-lang="domain">Domain / Server:</label>
                     <input type="text"
                            id="genius_domain"
                            name="genius_domain"
                            value="genius.minjiai.my.id"
+                           placeholder="e.g. genius.minjiai.my.id"
                            autocomplete="off">
                 </p>
                 <p>
@@ -769,6 +770,7 @@
                 remember_bssid: 'Remember BSSID when connecting to Wi-Fi',
                 sleep_mode: 'Enable Sleep Mode',
                 save: 'Save',
+                domain: 'Domain / Server:',
                 config_success: 'Configuration successful!'
             },
             'es-ES': {
@@ -959,6 +961,7 @@
                 remember_bssid: 'Ingat BSSID saat menghubungkan ke Wi-Fi',
                 sleep_mode: 'Aktifkan Mode Tidur',
                 save: 'Simpan',
+                domain: 'Domain / Server:',
                 config_success: 'Konfigurasi berhasil!'
             },
             'it-IT': {
@@ -1460,7 +1463,11 @@
             // Update text content
             document.querySelectorAll('[data-lang]').forEach(element => {
                 const key = element.getAttribute('data-lang');
-                element.textContent = translations[lang][key];
+                if (translations[lang] && translations[lang][key]) {
+                    element.textContent = translations[lang][key];
+                } else if (translations['en-US'] && translations['en-US'][key]) {
+                    element.textContent = translations['en-US'][key];
+                }
             });
             
             // Update input values
@@ -1674,7 +1681,8 @@
                 ota_url: document.getElementById('ota_url').value,
                 max_tx_power: parseInt(document.getElementById('max_tx_power').value),
                 remember_bssid: document.getElementById('remember_bssid').checked,
-                sleep_mode: document.getElementById('sleep_mode').checked
+                sleep_mode: document.getElementById('sleep_mode').checked,
+                genius_domain: document.getElementById('genius_domain') ? document.getElementById('genius_domain').value : ''
             };
 
             try {
@@ -1746,6 +1754,9 @@
                     data.show_ota_config ? 'block' : 'none';
                 document.getElementById('sleep_config_row').style.display =
                     data.show_sleep_config ? 'flex' : 'none';
+                if (data.genius_domain && document.getElementById('genius_domain')) {
+                    document.getElementById('genius_domain').value = data.genius_domain;
+                }
                 if (data.ota_url) {
                     document.getElementById('ota_url').value = data.ota_url;
                 }

@@ -84,6 +84,7 @@ public:
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
+    virtual void EnterWifiConfigMode() {}
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

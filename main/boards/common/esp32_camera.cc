@@ -368,24 +368,48 @@ std::expected<std::string, std::string> Esp32Camera::Explain(const std::string& 
 
 bool Esp32Camera::SaveJpeg(const char* path) {
     if (encoder_thread_.joinable()) encoder_thread_.join();
-    if (!current_fb_) return false;
+    if (!current_fb_) {
+        ESP_LOGI(TAG, "SaveJpeg: current_fb_ is null, calling Capture()...");
+        Capture();
+    }
+    if (!current_fb_) {
+        ESP_LOGE(TAG, "SaveJpeg failed: current_fb_ is null!");
+        return false;
+    }
+    ESP_LOGI(TAG, "SaveJpeg: current_fb_ %dx%d fmt=%d len=%zu. Opening %s",
+             current_fb_->width, current_fb_->height, current_fb_->format, current_fb_->len, path);
     FILE* out = fopen(path, "wb");
-    if (!out) { ESP_LOGE(TAG, "Cannot open %s", path); return false; }
+    if (!out) {
+        ESP_LOGE(TAG, "SaveJpeg failed: Cannot open %s (errno=%d: %s)", path, errno, strerror(errno));
+        return false;
+    }
     struct Writer { FILE* file; bool ok; size_t total; } writer{out, true, 0};
     const auto fmt = current_fb_->format == PIXFORMAT_RGB565 ? V4L2_PIX_FMT_RGB565 :
                      current_fb_->format == PIXFORMAT_JPEG ? V4L2_PIX_FMT_JPEG : V4L2_PIX_FMT_YUYV;
     const uint8_t* pixels = current_fb_->format == PIXFORMAT_RGB565 && encode_buf_ ? encode_buf_ : current_fb_->buf;
     const size_t bytes = current_fb_->format == PIXFORMAT_RGB565 && encode_buf_ ? encode_buf_size_ : current_fb_->len;
+    ESP_LOGI(TAG, "SaveJpeg: calling image_to_jpeg_cb (%zu bytes)...", bytes);
     bool encoded = image_to_jpeg_cb(const_cast<uint8_t*>(pixels), bytes, current_fb_->width, current_fb_->height, fmt, 80,
         [](void* ctx, size_t, const void* data, size_t len) -> size_t {
             auto* w = static_cast<Writer*>(ctx);
-            if (data && len && fwrite(data, 1, len, w->file) != len) w->ok = false;
+            if (data && len && fwrite(data, 1, len, w->file) != len) {
+                ESP_LOGE("Esp32Camera", "fwrite failed at offset %zu (errno=%d: %s)", w->total, errno, strerror(errno));
+                w->ok = false;
+            }
             w->total += len;
             return len;
         }, &writer);
-    bool ok = encoded && writer.ok && writer.total > 0 && fflush(out) == 0;
+    if (!encoded) {
+        ESP_LOGE(TAG, "SaveJpeg failed: image_to_jpeg_cb returned false");
+    }
+    int flush_ret = fflush(out);
+    if (flush_ret != 0) {
+        ESP_LOGE(TAG, "SaveJpeg failed: fflush returned %d (errno=%d: %s)", flush_ret, errno, strerror(errno));
+    }
+    bool ok = encoded && writer.ok && writer.total > 0 && flush_ret == 0;
     fclose(out);
     if (!ok) remove(path);
-    ESP_LOGI(TAG, "JPEG %s: %s (%u bytes)", ok ? "saved" : "failed", path, unsigned(writer.total));
+    ESP_LOGI(TAG, "JPEG %s: %s (%u bytes, encoded=%d, writer_ok=%d, flush=%d)",
+             ok ? "saved" : "failed", path, unsigned(writer.total), (int)encoded, (int)writer.ok, flush_ret);
     return ok;
 }
