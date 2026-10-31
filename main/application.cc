@@ -412,8 +412,20 @@ void Application::ActivationTask() {
     // Check for new assets version
     CheckAssetsVersion();
 
+    if (GetDeviceState() != kDeviceStateActivating) {
+        ESP_LOGI(TAG, "Activation aborted: state is no longer activating (%d)", GetDeviceState());
+        ota_.reset();
+        return;
+    }
+
     // Check for new firmware version
     CheckNewVersion();
+
+    if (GetDeviceState() != kDeviceStateActivating) {
+        ESP_LOGI(TAG, "Activation aborted: state is no longer activating (%d)", GetDeviceState());
+        ota_.reset();
+        return;
+    }
 
     // Genius V2 owns the unified skill catalog.  Wait until the worker has
     // registered it into the local MCP registry before the XiaoZhi protocol
@@ -426,6 +438,12 @@ void Application::ActivationTask() {
         ESP_LOGW(TAG, "Genius V2 skill catalog not ready after timeout; starting with native tools");
     }
 #endif
+
+    if (GetDeviceState() != kDeviceStateActivating) {
+        ESP_LOGI(TAG, "Activation aborted before protocol startup: state is %d", GetDeviceState());
+        ota_.reset();
+        return;
+    }
 
     // Initialize the protocol only after the Genius catalog is ready.
     InitializeProtocol();
@@ -501,10 +519,20 @@ void Application::CheckNewVersion() {
 
     auto& board = Board::GetInstance();
     while (true) {
+        if (GetDeviceState() != kDeviceStateActivating) {
+            ESP_LOGI(TAG, "CheckNewVersion aborted: device state changed to %d", GetDeviceState());
+            return;
+        }
+
         auto display = board.GetDisplay();
         display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
 
         auto check = ota_->CheckVersion();
+        if (GetDeviceState() != kDeviceStateActivating) {
+            ESP_LOGI(TAG, "CheckNewVersion aborted after CheckVersion: device state changed to %d", GetDeviceState());
+            return;
+        }
+
         if (!check) {
             retry_count++;
             if (retry_count >= MAX_RETRY) {
@@ -535,8 +563,9 @@ void Application::CheckNewVersion() {
                      retry_count, MAX_RETRY);
             for (int i = 0; i < retry_delay; i++) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
-                if (GetDeviceState() == kDeviceStateIdle) {
-                    break;
+                if (GetDeviceState() != kDeviceStateActivating) {
+                    ESP_LOGI(TAG, "CheckNewVersion retry delay aborted: device state is %d", GetDeviceState());
+                    return;
                 }
             }
             retry_delay *= 2;  // Double the retry delay
@@ -559,6 +588,10 @@ void Application::CheckNewVersion() {
             break;
         }
 
+        if (GetDeviceState() != kDeviceStateActivating) {
+            return;
+        }
+
         display->SetStatus(Lang::Strings::ACTIVATION);
         // Activation code is shown to the user and waiting for the user to input
         if (ota_->HasActivationCode()) {
@@ -567,6 +600,9 @@ void Application::CheckNewVersion() {
 
         // This will block the loop until the activation is done or timeout
         for (int i = 0; i < 10; ++i) {
+            if (GetDeviceState() != kDeviceStateActivating) {
+                return;
+            }
             ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
             esp_err_t err = ota_->Activate();
             if (err == ESP_OK) {
@@ -576,8 +612,8 @@ void Application::CheckNewVersion() {
             } else {
                 vTaskDelay(pdMS_TO_TICKS(10000));
             }
-            if (GetDeviceState() == kDeviceStateIdle) {
-                break;
+            if (GetDeviceState() != kDeviceStateActivating) {
+                return;
             }
         }
     }

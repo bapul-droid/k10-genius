@@ -250,7 +250,8 @@ void WifiBoard::EnterWifiConfigMode() {
     auto state = app.GetDeviceState();
 
     if (state == kDeviceStateSpeaking || state == kDeviceStateNotifying ||
-        state == kDeviceStateListening || state == kDeviceStateIdle) {
+        state == kDeviceStateListening || state == kDeviceStateIdle ||
+        state == kDeviceStateConnecting) {
         // Reset protocol (close audio channel, reset protocol)
         Application::GetInstance().ResetProtocol();
 
@@ -272,8 +273,8 @@ void WifiBoard::EnterWifiConfigMode() {
         return;
     }
 
-    if (state != kDeviceStateStarting) {
-        ESP_LOGE(TAG, "EnterWifiConfigMode called but device state is not starting or speaking, device state: %d", state);
+    if (state != kDeviceStateStarting && state != kDeviceStateActivating) {
+        ESP_LOGE(TAG, "EnterWifiConfigMode called but device state is not starting, activating or speaking, device state: %d", state);
         return;
     }
 

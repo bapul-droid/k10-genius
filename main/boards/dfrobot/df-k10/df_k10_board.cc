@@ -422,6 +422,9 @@ private:
             if (self->launcher_.IsPhotoMode()) { self->launcher_.ExitPhoto(); return; }
             if (self->launcher_.IsRecGalleryMode()) { self->launcher_.ExitRecGallery(); return; }
             if (self->launcher_.IsRecorderMode()) { self->launcher_.ExitRecorder(); return; }
+            if (self->launcher_.IsOpen()) {
+                self->launcher_.Close();
+            }
             if (app.IsGeniusMediaActive()) {
                 app.StopGeniusPlayback();
             }
