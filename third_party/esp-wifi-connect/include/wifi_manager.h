@@ -69,7 +69,8 @@ struct WifiManagerConfig {
     // persistence belong to the application.
     std::function<void(const std::string&, const std::string&)> provisioning_value_callback;
 
-    // Optional domain for provisioning portal pre-population.
+    // Optional Genius Device Plane settings for provisioning portal.
+    bool genius_enabled = false;
     std::string genius_domain;
 };
 

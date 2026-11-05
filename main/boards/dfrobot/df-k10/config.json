@@ -12,6 +12,7 @@
                 "CONFIG_CAMERA_GC2145_DVP_YUV422_YUYV_320X240_13FPS=y",
                 "CONFIG_LANGUAGE_ID_ID=y",
                 "CONFIG_USE_AFE_WAKE_WORD=y",
+                "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
                 "CONFIG_SR_WN_WN9_ALEXA=y"
             ]
         }

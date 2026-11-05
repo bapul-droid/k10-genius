@@ -1,4 +1,5 @@
 #include "k10_audio_codec.h"
+#include "display/anime_pixel.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -201,6 +202,7 @@ int K10AudioCodec::Read(int16_t* dest, int samples) {
 
 int K10AudioCodec::Write(const int16_t* data, int samples) {
     if (output_enabled_) {
+        anime_feed_playback_pcm(data, samples);
         std::vector<int32_t> buffer(samples * 2);  // Allocate buffer for 2x samples
 
         // Apply volume adjustment (same as before)

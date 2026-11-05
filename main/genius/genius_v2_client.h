@@ -16,8 +16,9 @@ class GeniusV2Client {
 public:
     static GeniusV2Client& GetInstance();
 
+    bool IsEnabled() const;
     void Start();
-    bool WaitForCatalog(uint32_t timeout_ms = 10000);
+    bool WaitForCatalog(uint32_t timeout_ms = 2000);
     void Stop();
 
     bool SendDeviceEvent(

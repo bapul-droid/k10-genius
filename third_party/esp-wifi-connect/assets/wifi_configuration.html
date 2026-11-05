@@ -318,6 +318,28 @@
         }
 
         /* ========== Advanced rows ========== */
+        .preset-row {
+            display: flex;
+            gap: 6px;
+            margin-top: -6px;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+        }
+        .btn-preset {
+            background: var(--surface-muted);
+            color: var(--accent);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 5px 10px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .btn-preset:hover {
+            background: var(--surface);
+            border-color: var(--accent);
+        }
         #ota_url_row { margin-bottom: 16px; }
         .field-inline {
             display: flex;
@@ -535,14 +557,18 @@
                     <input type="password" id="password" name="password">
                 </p>
                 <p>
-                    <label for="genius_domain" data-lang="domain">Domain / Server:</label>
+                    <label for="ota_url_main" data-lang="server_url">XiaoZhi Server (OTA URL):</label>
                     <input type="text"
-                           id="genius_domain"
-                           name="genius_domain"
-                           value="genius.minjiai.my.id"
-                           placeholder="e.g. genius.minjiai.my.id"
+                           id="ota_url_main"
+                           name="ota_url_main"
+                           placeholder="http://192.168.x.x:8000/ota/ atau https://api.xiaozhi.id/ota/"
                            autocomplete="off">
                 </p>
+                <div class="preset-row">
+                    <button type="button" class="btn-preset" onclick="setServerPreset('instabox')" data-lang="preset_instabox">Pure InstaBox</button>
+                    <button type="button" class="btn-preset" onclick="setServerPreset('id')" data-lang="preset_id">XiaoZhi Indonesia</button>
+                    <button type="button" class="btn-preset" onclick="setServerPreset('official')" data-lang="preset_official">Official</button>
+                </div>
                 <p>
                     <input type="submit" value="Connect" id="button" data-lang-value="connect">
                 </p>
@@ -592,6 +618,22 @@
                         <span data-lang="remember_bssid">Remember BSSID when connecting to Wi-Fi</span>
                     </label>
                     <input type="checkbox" id="remember_bssid" name="remember_bssid">
+                </div>
+
+                <!-- Genius Device Plane (Opsional) -->
+                <div class="switch-row" style="margin-bottom: 12px;">
+                    <label for="genius_enabled">
+                        <span data-lang="enable_genius">Enable Genius Device Plane (Optional)</span>
+                    </label>
+                    <input type="checkbox" id="genius_enabled" name="genius_enabled" onchange="toggleGeniusDomain(this.checked)">
+                </div>
+                <div id="genius_domain_row" style="display: none; margin-bottom: 16px;">
+                    <label for="genius_domain" data-lang="genius_domain">Genius Host / Domain:</label>
+                    <input type="text"
+                           id="genius_domain"
+                           name="genius_domain"
+                           placeholder="e.g. genius.minjiai.my.id"
+                           autocomplete="off">
                 </div>
 
                 <!-- Sleep Mode (visibility controlled by show_sleep_config from server) -->
@@ -770,7 +812,13 @@
                 remember_bssid: 'Remember BSSID when connecting to Wi-Fi',
                 sleep_mode: 'Enable Sleep Mode',
                 save: 'Save',
-                domain: 'Domain / Server:',
+                server_url: 'XiaoZhi Server (OTA URL):',
+                preset_instabox: 'Pure InstaBox',
+                preset_id: 'XiaoZhi Indonesia',
+                preset_official: 'Official',
+                enable_genius: 'Enable Genius Device Plane (Optional)',
+                genius_domain: 'Genius Host / Domain:',
+                domain: 'XiaoZhi Server (OTA URL):',
                 config_success: 'Configuration successful!'
             },
             'es-ES': {
@@ -961,7 +1009,13 @@
                 remember_bssid: 'Ingat BSSID saat menghubungkan ke Wi-Fi',
                 sleep_mode: 'Aktifkan Mode Tidur',
                 save: 'Simpan',
-                domain: 'Domain / Server:',
+                server_url: 'Server XiaoZhi (OTA URL):',
+                preset_instabox: 'Pure InstaBox',
+                preset_id: 'XiaoZhi Indonesia',
+                preset_official: 'XiaoZhi Resmi',
+                enable_genius: 'Aktifkan Genius Device Plane (Opsional)',
+                genius_domain: 'Host / Domain Genius:',
+                domain: 'Server XiaoZhi (OTA URL):',
                 config_success: 'Konfigurasi berhasil!'
             },
             'it-IT': {
@@ -1323,6 +1377,13 @@
                 remember_bssid: '连接 Wi-Fi 时记住 BSSID',
                 sleep_mode: '启用睡眠模式',
                 save: '保存',
+                server_url: '小智服务器 (OTA URL):',
+                preset_instabox: '纯净版 (InstaBox)',
+                preset_id: '小智印尼服',
+                preset_official: '官方服务器',
+                enable_genius: '启用 Genius Device Plane (可选)',
+                genius_domain: 'Genius 域名 / 主机:',
+                domain: '小智服务器 (OTA URL):',
                 config_success: '配置成功！'
             },
             'zh-TW': {
@@ -1630,10 +1691,17 @@
             const loadingOverlay = document.getElementById('loadingOverlay');
             loadingOverlay.classList.add('show');
 
+            const otaVal = (document.getElementById('ota_url_main') && document.getElementById('ota_url_main').value) ||
+                           (document.getElementById('ota_url') && document.getElementById('ota_url').value) || '';
+            const geniusEnabled = document.getElementById('genius_enabled') ? document.getElementById('genius_enabled').checked : false;
+            const geniusDomain = document.getElementById('genius_domain') ? document.getElementById('genius_domain').value : '';
+
             const payload = {
                 ssid: ssid.value,
                 password: document.getElementById('password').value,
-                genius_domain: document.getElementById('genius_domain').value
+                ota_url: otaVal,
+                genius_enabled: geniusEnabled,
+                genius_domain: geniusDomain
             };
 
             try {
@@ -1677,12 +1745,18 @@
             advancedButton.disabled = true;
             advancedError.textContent = '';
 
+            const otaVal = (document.getElementById('ota_url') && document.getElementById('ota_url').value) ||
+                           (document.getElementById('ota_url_main') && document.getElementById('ota_url_main').value) || '';
+            const geniusEnabled = document.getElementById('genius_enabled') ? document.getElementById('genius_enabled').checked : false;
+            const geniusDomain = document.getElementById('genius_domain') ? document.getElementById('genius_domain').value : '';
+
             const config = {
-                ota_url: document.getElementById('ota_url').value,
+                ota_url: otaVal,
                 max_tx_power: parseInt(document.getElementById('max_tx_power').value),
                 remember_bssid: document.getElementById('remember_bssid').checked,
                 sleep_mode: document.getElementById('sleep_mode').checked,
-                genius_domain: document.getElementById('genius_domain') ? document.getElementById('genius_domain').value : ''
+                genius_enabled: geniusEnabled,
+                genius_domain: geniusDomain
             };
 
             try {
@@ -1754,11 +1828,20 @@
                     data.show_ota_config ? 'block' : 'none';
                 document.getElementById('sleep_config_row').style.display =
                     data.show_sleep_config ? 'flex' : 'none';
+                if (data.ota_url) {
+                    if (document.getElementById('ota_url')) {
+                        document.getElementById('ota_url').value = data.ota_url;
+                    }
+                    if (document.getElementById('ota_url_main')) {
+                        document.getElementById('ota_url_main').value = data.ota_url;
+                    }
+                }
+                if (document.getElementById('genius_enabled')) {
+                    document.getElementById('genius_enabled').checked = !!data.genius_enabled;
+                    toggleGeniusDomain(!!data.genius_enabled);
+                }
                 if (data.genius_domain && document.getElementById('genius_domain')) {
                     document.getElementById('genius_domain').value = data.genius_domain;
-                }
-                if (data.ota_url) {
-                    document.getElementById('ota_url').value = data.ota_url;
                 }
                 if (data.max_tx_power) {
                     document.getElementById('max_tx_power').value = data.max_tx_power;
@@ -1778,7 +1861,37 @@
          * Clear OTA URL input field
          */
         function clearOtaUrl() {
-            document.getElementById('ota_url').value = '';
+            if (document.getElementById('ota_url')) document.getElementById('ota_url').value = '';
+            if (document.getElementById('ota_url_main')) document.getElementById('ota_url_main').value = '';
+        }
+
+        function toggleGeniusDomain(show) {
+            const row = document.getElementById('genius_domain_row');
+            if (row) {
+                row.style.display = show ? 'block' : 'none';
+            }
+        }
+
+        function setServerPreset(type) {
+            const otaMain = document.getElementById('ota_url_main');
+            const otaAdv = document.getElementById('ota_url');
+            let url = '';
+            if (type === 'instabox') {
+                url = '';
+                if (otaMain) {
+                    otaMain.value = '';
+                    otaMain.placeholder = 'http://192.168.x.x:8000/ota/';
+                    otaMain.focus();
+                }
+                if (otaAdv) otaAdv.value = '';
+                return;
+            } else if (type === 'id') {
+                url = 'https://api.xiaozhi.id/ota/';
+            } else if (type === 'official') {
+                url = 'https://api.tenclass.net/xiaozhi/ota/';
+            }
+            if (otaMain) otaMain.value = url;
+            if (otaAdv) otaAdv.value = url;
         }
 
         // ========== Initialization ==========
@@ -1804,6 +1917,13 @@
             loadSavedList();
             loadAPList();
             loadAdvancedConfig();
+
+            const otaMainEl = document.getElementById('ota_url_main');
+            const otaAdvEl = document.getElementById('ota_url');
+            if (otaMainEl && otaAdvEl) {
+                otaMainEl.addEventListener('input', () => { otaAdvEl.value = otaMainEl.value; });
+                otaAdvEl.addEventListener('input', () => { otaMainEl.value = otaAdvEl.value; });
+            }
         });
 
         /**

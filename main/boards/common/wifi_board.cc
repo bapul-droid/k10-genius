@@ -59,11 +59,9 @@ void WifiBoard::StartNetwork() {
     config.show_ota_config = true;
     config.show_sleep_config = true;
 
-    Settings settings("genius");
-    config.genius_domain = settings.GetString("domain");
-    if (config.genius_domain.empty()) {
-        config.genius_domain = "genius.minjiai.my.id";
-    }
+    Settings genius_settings("genius");
+    config.genius_enabled = genius_settings.GetBool("enabled", false);
+    config.genius_domain = genius_settings.GetString("domain");
 
     // Set a DHCP hostname so the router shows a friendly name instead of "espressif".
     // Uses the same "<prefix>-<last 2 MAC bytes>" scheme as the config AP SSID.
@@ -75,6 +73,21 @@ void WifiBoard::StartNetwork() {
     }
     config.provisioning_value_callback =
         [](const std::string& key, const std::string& value) {
+            if (key == "ota_url") {
+                Settings settings("wifi", true);
+                settings.SetString("ota_url", value);
+                ESP_LOGI(TAG, "Saved XiaoZhi Server OTA URL: %s", value.c_str());
+                return;
+            }
+
+            if (key == "genius_enabled") {
+                Settings settings("genius", true);
+                bool enabled = (value == "1" || value == "true");
+                settings.SetBool("enabled", enabled);
+                ESP_LOGI(TAG, "Saved Genius enabled: %d", enabled);
+                return;
+            }
+
             if (key != "genius_domain") {
                 return;
             }

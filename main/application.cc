@@ -319,9 +319,11 @@ void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
 
 #ifdef CONFIG_GENIUS_DEVICE_CORE
-    // Genius V2 requires working DNS/TLS. Do not start it while the device
-    // is still in Wi-Fi provisioning or before the network has an IP.
-    GeniusV2Client::GetInstance().Start();
+    // Genius Device Plane requires working DNS/TLS and explicit enablement.
+    // In XiaoZhi Pure mode, this is skipped completely.
+    if (GeniusV2Client::GetInstance().IsEnabled()) {
+        GeniusV2Client::GetInstance().Start();
+    }
 #endif
 
     auto state = GetDeviceState();
@@ -351,9 +353,12 @@ void Application::HandleNetworkConnectedEvent() {
 
 void Application::HandleNetworkDisconnectedEvent() {
 #ifdef CONFIG_GENIUS_DEVICE_CORE
+    if (GeniusV2Client::GetInstance().IsEnabled()) {
+        const bool local_alarm = genius_priority_.load() == 1;
+        if (!local_alarm)
+            CancelGeniusLifecycle("network_lost");
+    }
     const bool local_alarm = genius_priority_.load() == 1;
-    if (!local_alarm)
-        CancelGeniusLifecycle("network_lost");
 #else
     const bool local_alarm = false;
 #endif
@@ -427,15 +432,14 @@ void Application::ActivationTask() {
         return;
     }
 
-    // Genius V2 owns the unified skill catalog.  Wait until the worker has
-    // registered it into the local MCP registry before the XiaoZhi protocol
-    // starts and performs its first tools/list discovery.
 #ifdef CONFIG_GENIUS_DEVICE_CORE
-    ESP_LOGI(TAG, "Waiting for Genius V2 skill catalog before XiaoZhi protocol startup");
-    if (GeniusV2Client::GetInstance().WaitForCatalog(10000)) {
-        ESP_LOGI(TAG, "Genius V2 skill catalog ready; starting XiaoZhi protocol");
-    } else {
-        ESP_LOGW(TAG, "Genius V2 skill catalog not ready after timeout; starting with native tools");
+    if (GeniusV2Client::GetInstance().IsEnabled()) {
+        ESP_LOGI(TAG, "Waiting for Genius skill catalog before XiaoZhi protocol startup");
+        if (GeniusV2Client::GetInstance().WaitForCatalog(2000)) {
+            ESP_LOGI(TAG, "Genius skill catalog ready; starting XiaoZhi protocol");
+        } else {
+            ESP_LOGW(TAG, "Genius skill catalog not ready after timeout; starting with native tools");
+        }
     }
 #endif
 

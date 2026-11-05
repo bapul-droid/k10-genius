@@ -19,7 +19,6 @@
 namespace {
 
 static const char* TAG = "GeniusV2Client";
-static const char* kDefaultDomain = "genius.minjiai.my.id";
 
 constexpr TickType_t kInitialDelay = pdMS_TO_TICKS(3000);
 constexpr TickType_t kLoopDelay = pdMS_TO_TICKS(1000);
@@ -104,7 +103,24 @@ GeniusV2Client& GeniusV2Client::GetInstance() {
     return instance;
 }
 
+bool GeniusV2Client::IsEnabled() const {
+    Settings settings("genius", false);
+    if (!settings.GetBool("enabled", false)) {
+        return false;
+    }
+    std::string domain = settings.GetString("domain");
+    if (domain.empty() || domain == "disabled") {
+        return false;
+    }
+    return true;
+}
+
 void GeniusV2Client::Start() {
+    if (!IsEnabled()) {
+        ESP_LOGI(TAG, "Genius Device Plane is disabled (XiaoZhi Pure mode)");
+        return;
+    }
+
     if (running_) {
         return;
     }
@@ -133,6 +149,9 @@ void GeniusV2Client::Start() {
 }
 
 bool GeniusV2Client::WaitForCatalog(uint32_t timeout_ms) {
+    if (!IsEnabled() || !running_) {
+        return false;
+    }
     if (catalog_registered_) {
         return true;
     }
@@ -160,7 +179,7 @@ void GeniusV2Client::Run() {
             if (Connect()) {
                 last_heartbeat = xTaskGetTickCount();
             } else {
-                vTaskDelay(pdMS_TO_TICKS(5000));
+                vTaskDelay(pdMS_TO_TICKS(10000));
                 continue;
             }
         }
@@ -185,6 +204,10 @@ void GeniusV2Client::Run() {
 }
 
 bool GeniusV2Client::Connect() {
+    if (!IsEnabled()) {
+        return false;
+    }
+
     websocket_.reset();
     connected_ = false;
 
@@ -209,15 +232,17 @@ bool GeniusV2Client::Connect() {
         connected_ = false;
     });
 
-    Settings settings("genius");
+    Settings settings("genius", false);
     std::string domain = settings.GetString("domain");
-    if (domain.empty()) {
-        domain = kDefaultDomain;
+    if (domain.empty() || domain == "disabled") {
+        ESP_LOGW(TAG, "No valid Genius domain configured");
+        websocket_.reset();
+        return false;
     }
 
     const std::string url = "wss://" + domain + "/device/ws";
 
-    ESP_LOGI(TAG, "Connecting V2: %s", url.c_str());
+    ESP_LOGI(TAG, "Connecting Genius Device Plane: %s", url.c_str());
     auto result = websocket_->Connect(url.c_str());
 
     if (!result) {
@@ -268,7 +293,7 @@ bool GeniusV2Client::SendDeviceEvent(
     const std::string& event,
     const std::string& data_json
 ) {
-    if (websocket_ == nullptr || !connected_ || event.empty()) {
+    if (!IsEnabled() || websocket_ == nullptr || !connected_ || event.empty()) {
         return false;
     }
 

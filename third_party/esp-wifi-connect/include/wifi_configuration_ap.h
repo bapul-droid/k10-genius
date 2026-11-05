@@ -37,6 +37,7 @@ public:
     void SetLanguage(const std::string &language);
     void SetShowOtaConfig(bool show) { show_ota_config_ = show; }
     void SetShowSleepConfig(bool show) { show_sleep_config_ = show; }
+    void SetGeniusEnabled(bool enabled) { genius_enabled_ = enabled; }
     void SetGeniusDomain(const std::string& domain) { genius_domain_ = domain; }
     void Start();
     void Stop();
@@ -81,6 +82,7 @@ private:
     bool sleep_mode_;
     bool show_ota_config_ = false;
     bool show_sleep_config_ = false;
+    bool genius_enabled_ = false;
     std::string genius_domain_;
 
     // Callbacks

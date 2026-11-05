@@ -1,806 +1,811 @@
-#include "genius/portal.h"
-#include "genius/native_services.h"
-#include "genius/genius_v2_client.h"
-#include "wifi_board.h"
-#include "k10_audio_codec.h"
-#include "display/lcd_display.h"
-#include "k10_launcher.h"
-#include "esp_lcd_ili9341.h"
-#include "led_control.h"
-#include "application.h"
-#include "mcp_server.h"
-#include "button.h"
-#include "config.h"
-#include "esp_video.h"
-
-#include "led/circular_strip.h"
-#include "assets/lang_config.h"
-
-#include <esp_log.h>
-#include <esp_idf_version.h>
-#include <esp_lcd_panel_vendor.h>
-#include <driver/i2c_master.h>
-#include <driver/spi_common.h>
-#include <driver/sdspi_host.h>
-#include <esp_vfs_fat.h>
-#include <sdmmc_cmd.h>
-
-#include "esp_io_expander_tca95xx_16bit.h"
-
-#include <mutex>
-#include <esp_heap_caps.h>
-
-#define TAG "DF-K10"
-
-// Kalibrasi suhu AHT20: sensor nempel PCB kena self-heating ESP32-S3.
-// Nilai negatif = kurangi bacaan. Tweak sesuai tes HW.
-static constexpr float K10_TEMP_OFFSET_C = -11.5f;
-
-class Df_K10Board : public WifiBoard {
-private:
-    i2c_master_bus_handle_t i2c_bus_;
-    esp_io_expander_handle_t io_expander;
-    LcdDisplay *display_;
-    button_handle_t btn_a;
-    button_handle_t btn_b;
-    EspVideo* camera_ = nullptr;
-    std::mutex camera_mutex_;
-
-    button_driver_t* btn_a_driver_ = nullptr;
-    button_driver_t* btn_b_driver_ = nullptr;
-
-    CircularStrip* led_strip_;
-    K10Launcher launcher_;
-
-    static Df_K10Board* instance_;
-
-    void InitializeI2c() {
-        // Initialize I2C peripheral
-        i2c_master_bus_config_t i2c_bus_cfg = {
-                .i2c_port = (i2c_port_t)1,
-                .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
-                .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
-                .clk_source = I2C_CLK_SRC_DEFAULT,
-                .glitch_ignore_cnt = 7,
-                .intr_priority = 0,
-                .trans_queue_depth = 0,
-                .flags = {
-                                .enable_internal_pullup = 1,
-                        },
-        };
-        ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
-    }
-
-    i2c_master_dev_handle_t aht_ = nullptr;
-    i2c_master_dev_handle_t als_ = nullptr;
-    i2c_master_dev_handle_t imu_ = nullptr;
-
-    bool auto_rotate_enabled_ = false;
-    TaskHandle_t auto_rotate_task_ = nullptr;
-    int current_rotation_ = 0;
-
-    static void AutoRotateTask(void* arg) {
-        auto self = static_cast<Df_K10Board*>(arg);
-
-        int candidate = self->current_rotation_;
-        int stable_count = 0;
-
-
-        while (true) {
-            uint8_t reg = 0x28 | 0x80;
-            uint8_t xyz[6] = {};
-
-            esp_err_t ret = i2c_master_transmit_receive(
-                self->imu_, &reg, 1, xyz, sizeof(xyz), 100);
-
-            if (ret == ESP_OK) {
-                int16_t x = (int16_t)((xyz[1] << 8) | xyz[0]) >> 4;
-                int16_t y = (int16_t)((xyz[3] << 8) | xyz[2]) >> 4;
-                int16_t z = (int16_t)((xyz[5] << 8) | xyz[4]) >> 4;
-
-                if (!self->auto_rotate_enabled_) {
-                    stable_count = 0;
-                    vTaskDelay(pdMS_TO_TICKS(250));
-                    continue;
-                }
-
-                int next = self->current_rotation_;
-
-                // Ignore near-flat/ambiguous positions.
-                if (abs(x) > 650 && abs(x) > abs(y) + 200) {
-                    next = (x > 0) ? 90 : 270;
-                } else if (abs(y) > 650 && abs(y) > abs(x) + 200) {
-                    next = (y > 0) ? 0 : 180;
-                }
-
-                if (next != self->current_rotation_) {
-                    if (next == candidate) {
-                        stable_count++;
-                    } else {
-                        candidate = next;
-                        stable_count = 1;
-                    }
-
-                    // About 0.75 s stable before rotating.
-                    if (stable_count >= 3) {
-                        auto lcd = static_cast<LcdDisplay*>(self->display_);
-                        if (lcd != nullptr && lcd->SetRotation(next)) {
-                            self->current_rotation_ = next;
-                            ESP_LOGI(TAG, "Auto rotation -> %d (x=%d y=%d)",
-                                     next, x, y);
-                        }
-                        stable_count = 0;
-                    }
-                } else {
-                    candidate = next;
-                    stable_count = 0;
-                }
-            }
-
-            vTaskDelay(pdMS_TO_TICKS(250));
-        }
-    }
-
-    void SetAutoRotate(bool enabled) {
-        auto_rotate_enabled_ = enabled;
-
-        // Task IMU sudah dibuat di InitializeSensors; di sini cuma flag.
-        ESP_LOGI(TAG, "Auto rotate: %s", enabled ? "ON" : "OFF");
-    }
-
-    void InitializeSensors() {
-        i2c_device_config_t cfg = {};
-        cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-        cfg.scl_speed_hz = 100000;
-
-        cfg.device_address = 0x38;
-        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_, &cfg, &aht_));
-
-        cfg.device_address = 0x29;
-        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_, &cfg, &als_));
-
-        cfg.device_address = 0x19;
-        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_, &cfg, &imu_));
-
-        uint8_t als_ctrl[] = {0x80, 0x01};
-        uint8_t als_rate[] = {0x85, 0x03};
-        ESP_ERROR_CHECK(i2c_master_transmit(als_, als_ctrl, sizeof(als_ctrl), 100));
-        ESP_ERROR_CHECK(i2c_master_transmit(als_, als_rate, sizeof(als_rate), 100));
-
-        uint8_t status_cmd = 0x71;
-        uint8_t status = 0;
-        ESP_ERROR_CHECK(i2c_master_transmit_receive(
-            aht_, &status_cmd, 1, &status, 1, 100));
-
-        if ((status & 0x08) == 0) {
-            uint8_t init_cmd[] = {0xBE, 0x08, 0x00};
-            ESP_ERROR_CHECK(i2c_master_transmit(
-                aht_, init_cmd, sizeof(init_cmd), 100));
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-
-        uint8_t imu_ctrl1[] = {0x20, 0x57};
-        ESP_ERROR_CHECK(i2c_master_transmit(
-            imu_, imu_ctrl1, sizeof(imu_ctrl1), 100));
-
-        // IMU task selalu jalan (lift-to-talk + auto-rotate).
-        if (auto_rotate_task_ == nullptr) {
-            xTaskCreate(AutoRotateTask, "k10_imu", 4096, this, 3, &auto_rotate_task_);
-        }
-
-        ESP_LOGI(TAG, "K10 sensors ready: AHT20 LTR303 SC7A20H");
-    }
-
-    std::string ReadSensors() {
-        float temperature = 0;
-        float humidity = 0;
-        uint16_t lux = 0;
-        int16_t x = 0, y = 0, z = 0;
-
-        uint8_t measure[] = {0xAC, 0x33, 0x00};
-        uint8_t data[6] = {};
-
-        esp_err_t aht_ret =
-            i2c_master_transmit(aht_, measure, sizeof(measure), 100);
-
-        if (aht_ret == ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(80));
-            aht_ret = i2c_master_receive(aht_, data, sizeof(data), 100);
-        }
-
-        if (aht_ret == ESP_OK && !(data[0] & 0x80)) {
-            uint32_t raw_h =
-                ((uint32_t)data[1] << 12) |
-                ((uint32_t)data[2] << 4) |
-                (data[3] >> 4);
-
-            uint32_t raw_t =
-                ((uint32_t)(data[3] & 0x0F) << 16) |
-                ((uint32_t)data[4] << 8) |
-                data[5];
-
-            humidity = raw_h * 100.0f / 1048576.0f;
-            temperature = raw_t * 200.0f / 1048576.0f - 50.0f + K10_TEMP_OFFSET_C;
-        }
-
-        uint8_t reg = 0x88;
-        uint8_t light[4] = {};
-
-        esp_err_t als_ret =
-            i2c_master_transmit_receive(
-                als_, &reg, 1, light, sizeof(light), 100);
-
-        if (als_ret == ESP_OK) {
-            uint16_t ch1 = ((uint16_t)light[1] << 8) | light[0];
-            uint16_t ch0 = ((uint16_t)light[3] << 8) | light[2];
-
-            float sum = (float)ch0 + ch1;
-            float ratio = sum > 0 ? ch1 / sum : 1.0f;
-            float value = 0;
-
-            if (ratio < 0.45f)
-                value = 1.7743f * ch0 + 1.1059f * ch1;
-            else if (ratio < 0.64f)
-                value = 4.2785f * ch0 - 1.9548f * ch1;
-            else if (ratio < 0.85f)
-                value = 0.5926f * ch0 + 0.1185f * ch1;
-
-            if (value > 0)
-                lux = (uint16_t)value;
-        }
-
-        uint8_t imu_reg = 0x28 | 0x80;
-        uint8_t xyz[6] = {};
-
-        esp_err_t imu_ret =
-            i2c_master_transmit_receive(
-                imu_, &imu_reg, 1, xyz, sizeof(xyz), 100);
-
-        if (imu_ret == ESP_OK) {
-            x = (int16_t)((xyz[1] << 8) | xyz[0]) >> 4;
-            y = (int16_t)((xyz[3] << 8) | xyz[2]) >> 4;
-            z = (int16_t)((xyz[5] << 8) | xyz[4]) >> 4;
-        }
-
-        if (aht_ret != ESP_OK || als_ret != ESP_OK || imu_ret != ESP_OK) {
-            return "{\"error\":\"sensor read failed\"}";
-        }
-
-        char result[256];
-        snprintf(result, sizeof(result),
-            "{\"temperature_c\":%.2f,\"humidity_percent\":%.2f,"
-            "\"light_lux\":%u,\"accelerometer\":{\"x\":%d,\"y\":%d,\"z\":%d}}",
-            temperature, humidity, lux, x, y, z);
-
-        ESP_LOGI(TAG, "Sensor read: %s", result);
-        return std::string(result);
-    }
-    void InitializeSdCardTest() {
-        constexpr spi_host_device_t SD_HOST = SPI2_HOST;
-
-        spi_bus_config_t bus_cfg = {};
-        bus_cfg.mosi_io_num = GPIO_NUM_42; // DFRobot official
-        bus_cfg.miso_io_num = GPIO_NUM_41; // DFRobot official
-        bus_cfg.sclk_io_num = GPIO_NUM_44; // DFRobot official
-        bus_cfg.quadwp_io_num = GPIO_NUM_NC;
-        bus_cfg.quadhd_io_num = GPIO_NUM_NC;
-        bus_cfg.max_transfer_sz = 4096;
-
-        esp_err_t ret = spi_bus_initialize(SD_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "TF: spi_bus_initialize failed: %s", esp_err_to_name(ret));
-            return;
-        }
-
-        sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-        slot_config.host_id = SD_HOST;
-        slot_config.gpio_cs = GPIO_NUM_40; // DFRobot official
-
-        esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
-        mount_config.format_if_mount_failed = false;
-        mount_config.max_files = 5;
-        mount_config.allocation_unit_size = 16 * 1024;
-
-        sdmmc_card_t* card = nullptr;
-
-        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-        host.slot = SD_HOST;
-
-        ret = esp_vfs_fat_sdspi_mount(
-            "/sdcard",
-            &host,
-            &slot_config,
-            &mount_config,
-            &card
-        );
-
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "TF: mount failed: %s", esp_err_to_name(ret));
-            spi_bus_free(SD_HOST);
-            return;
-        }
-
-        ESP_LOGI(TAG, "TF: mounted OK");
-        sdmmc_card_print_info(stdout, card);
-    }
-    void InitializeSpi() {
-        spi_bus_config_t buscfg = {};
-        buscfg.mosi_io_num = GPIO_NUM_21;
-        buscfg.miso_io_num = GPIO_NUM_NC; // LCD ILI9341 is write-only, does not need MISO. Free GPIO41 for SD card SPI2
-        buscfg.sclk_io_num = GPIO_NUM_12;
-        buscfg.quadwp_io_num = GPIO_NUM_NC;
-        buscfg.quadhd_io_num = GPIO_NUM_NC;
-        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
-        ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
-    }
-
-    esp_err_t IoExpanderSetLevel(uint16_t pin_mask, uint8_t level) {
-        return esp_io_expander_set_level(io_expander, pin_mask, level);
-    }
-
-    uint8_t IoExpanderGetLevel(uint16_t pin_mask) {
-        uint32_t pin_val = 0;
-        esp_io_expander_get_level(io_expander, DRV_IO_EXP_INPUT_MASK, &pin_val);
-
-        pin_mask &= DRV_IO_EXP_INPUT_MASK;
-        return (uint8_t)((pin_val & pin_mask) ? 1 : 0);
-    }
-
-    void InitializeIoExpander() {
-        esp_io_expander_new_i2c_tca95xx_16bit(
-                i2c_bus_, ESP_IO_EXPANDER_I2C_TCA9555_ADDRESS_000, &io_expander);
-
-        esp_err_t ret;
-        ret = esp_io_expander_print_state(io_expander);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Print state failed: %s", esp_err_to_name(ret));
-        }
-
-        ret = esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_OUTPUT);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Set direction failed: %s", esp_err_to_name(ret));
-        }
-        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 0);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Set level failed: %s", esp_err_to_name(ret));
-        }
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 1);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Set level failed: %s", esp_err_to_name(ret));
-        }
-        ret = esp_io_expander_set_dir(
-                io_expander, DRV_IO_EXP_INPUT_MASK,
-                IO_EXPANDER_INPUT);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Set direction failed: %s", esp_err_to_name(ret));
-        }
-    }
-
-    void InitializeButtons() {
-        instance_ = this;
-
-        // Button A
-        button_config_t btn_a_config = {
-            .long_press_time = 1000,
-            .short_press_time = 0
-        };
-        btn_a_driver_ = (button_driver_t*)calloc(1, sizeof(button_driver_t));
-        btn_a_driver_->enable_power_save = false;
-        btn_a_driver_->get_key_level = [](button_driver_t *button_driver) -> uint8_t {
-            return !instance_->IoExpanderGetLevel(IO_EXPANDER_PIN_NUM_12);
-        };
-        ESP_ERROR_CHECK(iot_button_create(&btn_a_config, btn_a_driver_, &btn_a));
-        iot_button_register_cb(btn_a, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
-            auto self = static_cast<Df_K10Board*>(usr_data);
-            Application::GetInstance().WakeK10LcdFromButton();
-            if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryNext(); return; }
-            if (self->launcher_.IsPhotoMode()) { self->launcher_.RetakePhoto(); return; }
-            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryNext(); return; }
-            if (self->launcher_.IsRecorderMode()) { self->launcher_.RecorderTogglePlayback(); return; }
-            if (self->launcher_.IsOpen()) { self->launcher_.Next(); return; }
-            auto codec = self->GetAudioCodec();
-            auto volume = codec->output_volume() + 10;
-            if (volume > 100) volume = 100;
-            codec->SetOutputVolume(volume);
-            self->GetDisplay()->ShowNotification(
-                Lang::Strings::VOLUME + std::to_string(volume));
-
-        }, this);
-        iot_button_register_cb(btn_a, BUTTON_DOUBLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
-            auto self = static_cast<Df_K10Board*>(usr_data);
-            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryTogglePlay(); return; }
-            auto& app = Application::GetInstance();
-            if (app.IsGeniusMediaActive()) {
-                ESP_LOGI(TAG, "Button A double click: stop Genius media");
-                app.StopGeniusPlayback();
-            }
-        }, this);
-        iot_button_register_cb(btn_a, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
-            auto self = static_cast<Df_K10Board*>(usr_data);
-            auto& app = Application::GetInstance();
-            if (self->launcher_.IsPhotoMode()) { self->launcher_.ExitPhoto(); return; }
-            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.ExitRecGallery(); return; }
-            if (self->launcher_.IsRecorderMode()) { self->launcher_.ExitRecorder(); return; }
-            if (self->launcher_.IsOpen()) {
-                self->launcher_.Close();
-            }
-            if (app.IsGeniusMediaActive()) {
-                app.StopGeniusPlayback();
-            }
-            ESP_LOGI(TAG, "Button A long press: WiFi provisioning");
-            self->EnterWifiConfigMode();
-        }, this);
-
-        // Button B
-        button_config_t btn_b_config = {
-            .long_press_time = 1500,
-            .short_press_time = 0
-        };
-        btn_b_driver_ = (button_driver_t*)calloc(1, sizeof(button_driver_t));
-        btn_b_driver_->enable_power_save = false;
-        btn_b_driver_->get_key_level = [](button_driver_t *button_driver) -> uint8_t {
-            return !instance_->IoExpanderGetLevel(IO_EXPANDER_PIN_NUM_2);
-        };
-        ESP_ERROR_CHECK(iot_button_create(&btn_b_config, btn_b_driver_, &btn_b));
-        iot_button_register_cb(btn_b, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
-            auto self = static_cast<Df_K10Board*>(usr_data);
-            Application::GetInstance().WakeK10LcdFromButton();
-            if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryPrev(); return; }
-            if (self->launcher_.IsPhotoMode()) { self->launcher_.FreezePhoto(); return; }
-            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryPrev(); return; }
-            if (self->launcher_.IsRecorderMode()) { self->launcher_.RecorderToggleRecord(); return; }
-            if (self->launcher_.IsOpen()) { self->launcher_.Select(); return; }
-            auto codec = self->GetAudioCodec();
-            auto volume = codec->output_volume() - 10;
-            if (volume < 0) volume = 0;
-            codec->SetOutputVolume(volume);
-            self->GetDisplay()->ShowNotification(
-                Lang::Strings::VOLUME + std::to_string(volume));
-
-        }, this);
-        iot_button_register_cb(btn_b, BUTTON_DOUBLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
-            auto self = static_cast<Df_K10Board*>(usr_data);
-            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryTogglePlay(); return; }
-            auto& app = Application::GetInstance();
-            if (app.IsGeniusMediaActive()) {
-                ESP_LOGI(TAG, "Button B double click: stop Genius media");
-                app.StopGeniusPlayback();
-            }
-        }, this);
-        iot_button_register_cb(btn_b, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
-            auto self = static_cast<Df_K10Board*>(usr_data);
-            auto& app = Application::GetInstance();
-            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryPrev(); return; }
-            if (app.IsGeniusMediaActive()) {
-                app.StopGeniusPlayback();
-                return;
-            }
-            ESP_LOGI(TAG, "Button B long press: Open launcher");
-            self->launcher_.Open();
-        }, this);
-    }
-
-    void LogHeap(const char* context) {
-        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-        ESP_LOGI(TAG, "Heap [%s]: free_internal=%u largest_block=%u",
-                 context, (unsigned)free_internal, (unsigned)largest_block);
-    }
-
-    void InitializeCamera() {
-        static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
-            .data_width = CAM_CTLR_DATA_WIDTH_8,
-            .data_io = {
-                [0] = CAMERA_PIN_D2,
-                [1] = CAMERA_PIN_D3,
-                [2] = CAMERA_PIN_D4,
-                [3] = CAMERA_PIN_D5,
-                [4] = CAMERA_PIN_D6,
-                [5] = CAMERA_PIN_D7,
-                [6] = CAMERA_PIN_D8,
-                [7] = CAMERA_PIN_D9,
-            },
-            .vsync_io = CAMERA_PIN_VSYNC,
-            .de_io = CAMERA_PIN_HREF,
-            .pclk_io = CAMERA_PIN_PCLK,
-            .xclk_io = CAMERA_PIN_XCLK,
-        };
-
-        esp_video_init_sccb_config_t sccb_config = {
-            .init_sccb = false,
-            .i2c_handle = i2c_bus_,
-            .freq = 100000,
-        };
-
-        esp_video_init_dvp_config_t dvp_config = {
-            .sccb_config = sccb_config,
-            .reset_pin = CAMERA_PIN_RESET,
-            .pwdn_pin = CAMERA_PIN_PWDN,
-            .dvp_pin = dvp_pin_config,
-            .xclk_freq = XCLK_FREQ_HZ,
-        };
-
-        esp_video_init_config_t video_config = {
-            .dvp = &dvp_config,
-        };
-
-        camera_ = new EspVideo(video_config);
-    }
-
-    void InitializeIli9341Display() {
-        esp_lcd_panel_io_handle_t panel_io = nullptr;
-        esp_lcd_panel_handle_t panel = nullptr;
-
-        // Install panel IO
-        ESP_LOGD(TAG, "Install panel IO");
-        esp_lcd_panel_io_spi_config_t io_config = {};
-        io_config.cs_gpio_num = GPIO_NUM_14;
-        io_config.dc_gpio_num = GPIO_NUM_13;
-        io_config.spi_mode = 0;
-        io_config.pclk_hz = 40 * 1000 * 1000;
-        io_config.trans_queue_depth = 10;
-        io_config.lcd_cmd_bits = 8;
-        io_config.lcd_param_bits = 8;
-        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
-
-        // Install LCD driver
-        ESP_LOGD(TAG, "Install LCD driver");
-        esp_lcd_panel_dev_config_t panel_config = {};
-        panel_config.reset_gpio_num = GPIO_NUM_NC;
-        panel_config.bits_per_pixel = 16;
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
-        panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
-#else
-        panel_config.color_space = ESP_LCD_COLOR_SPACE_BGR;
-#endif
-
-        ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
-        ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
-        ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-        ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, DISPLAY_BACKLIGHT_OUTPUT_INVERT));
-        ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));
-        ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
-        ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
-
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
-    }
-
-    // Initialize IoT & MCP tools
-    void InitializeIot() {
-        led_strip_ = new CircularStrip(BUILTIN_LED_GPIO, 3);
-        new LedStripControl(led_strip_);
-        auto& mcp_server = McpServer::GetInstance();
-
-        mcp_server.AddTool(
-            "self.system.reconfigure_wifi",
-            "End this conversation and enter WiFi configuration mode (hotspot AP mode) for network and domain setup.\n"
-            "Use this tool when the user asks via voice to configure WiFi, change WiFi, setup network, or enter WiFi mode (e.g. 'masuk mode wifi', 'pengaturan wifi', 'reconfigure wifi').",
-            PropertyList(),
-            [this](const PropertyList&) -> ReturnValue {
-                ESP_LOGI(TAG, "Voice command received via MCP: Enter WiFi config mode");
-                EnterWifiConfigMode();
-                return true;
-            });
-
-        mcp_server.AddTool(
-            "self.k10.app.open_recorder",
-            "Open the K10 Recorder app on its LCD. Recording starts only after pressing the physical record button. Use when the user asks to open the recorder app.",
-            PropertyList(),
-            [this](const PropertyList&) -> ReturnValue {
-                if (launcher_.IsRecorderMode()) return std::string("Recorder already open");
-                if (launcher_.IsRecGalleryMode() || launcher_.IsPhotoMode() || launcher_.IsGalleryMode())
-                    return std::string("Close the current app first");
-                launcher_.EnterRecorder();
-                return std::string("Recorder opened; use physical buttons to record");
-            });
-
-        mcp_server.AddTool(
-            "self.k10.app.open_recordings_gallery",
-            "Open the K10 saved audio recordings gallery on its LCD. Use when the user asks to open the recording gallery.",
-            PropertyList(),
-            [this](const PropertyList&) -> ReturnValue {
-                if (launcher_.IsRecGalleryMode()) return std::string("Recording gallery already open");
-                if (launcher_.IsRecorderMode() || launcher_.IsPhotoMode() || launcher_.IsGalleryMode())
-                    return std::string("Close the current app first");
-                launcher_.EnterRecGallery();
-                return std::string("Recording gallery opened; use physical buttons to browse and play");
-            });
-
-        mcp_server.AddTool(
-            "self.k10.recording.delete_request",
-            "PHASE 1: Request deletion of K10 audio recording(s). Does NOT delete yet. "
-            "Target can be a filename like 'REC_000003.wav', 'latest' for the newest recording, "
-            "or 'all' for ALL recordings. Returns file details and a confirmation token. "
-            "You MUST ask the user to confirm with the exact details before calling delete_confirm. "
-            "For 'all', warn clearly that EVERY recording will be permanently deleted.",
-            PropertyList({
-                Property("target", kPropertyTypeString),
-            }),
-            [this](const PropertyList& props) -> ReturnValue {
-                std::string target = props["target"].value<std::string>();
-                auto info = launcher_.RecorderDeleteRequest(target);
-                if (!info.valid) return std::string("Delete request failed: ") + info.error;
-                char buf[256];
-                if (info.filename == "all") {
-                    snprintf(buf, sizeof(buf),
-                        "CONFIRM REQUIRED: Delete ALL %ld recordings (%ld KB total)? "
-                        "This cannot be undone. Token: %s. "
-                        "Ask user: 'Delete all %ld recordings permanently?'",
-                        info.duration_sec, info.size_bytes / 1024,
-                        info.token.c_str(), info.duration_sec);
-                } else {
-                    snprintf(buf, sizeof(buf),
-                        "CONFIRM REQUIRED: Delete %s (%ld sec, %ld KB)? "
-                        "Token: %s. Ask user to confirm.",
-                        info.filename.c_str(), info.duration_sec,
-                        info.size_bytes / 1024, info.token.c_str());
-                }
-                return std::string(buf);
-            });
-
-        mcp_server.AddTool(
-            "self.k10.recording.delete_confirm",
-            "PHASE 2: Execute confirmed deletion. Only call after the user explicitly confirmed "
-            "the exact target from delete_request. The token must match the one from delete_request. "
-            "If the file changed since the request, the token will not match and deletion is refused.",
-            PropertyList({
-                Property("target", kPropertyTypeString),
-                Property("token", kPropertyTypeString),
-            }),
-            [this](const PropertyList& props) -> ReturnValue {
-                std::string target = props["target"].value<std::string>();
-                std::string token = props["token"].value<std::string>();
-                return launcher_.RecorderDeleteConfirm(target, token);
-            });
-
-        mcp_server.AddTool(
-            "self.k10.sdcard.list_recordings",
-            "List WAV recording filenames stored on this K10 SD card, read-only. Use when the user asks which recordings are saved on the SD card.",
-            PropertyList(),
-            [this](const PropertyList& properties) -> ReturnValue {
-                return launcher_.ListRecordingsForMcp();
-            });
-
-        mcp_server.AddTool(
-            "self.k10.sensors",
-            "Read the K10 onboard sensors: temperature, humidity, ambient light and accelerometer.",
-            PropertyList(),
-            [this](const PropertyList& properties) -> ReturnValue {
-                return ReadSensors();
-            });
-        mcp_server.AddTool(
-            "self.screen.set_auto_rotation",
-            "Enable or disable automatic screen rotation using the K10 accelerometer.",
-            PropertyList({
-                Property("enabled", kPropertyTypeBoolean)
-            }),
-            [this](const PropertyList& properties) -> ReturnValue {
-                bool enabled = properties["enabled"].value<bool>();
-                SetAutoRotate(enabled);
-                return true;
-            });
-        mcp_server.AddTool(
-            "self.screen.set_rotation",
-            "Rotate the screen. Supported angles are 0, 90, 180, and 270 degrees.",
-            PropertyList({
-                Property("degrees", kPropertyTypeInteger, 0, 270)
-            }),
-            [this](const PropertyList& properties) -> ReturnValue {
-                int degrees = properties["degrees"].value<int>();
-                auto lcd = static_cast<LcdDisplay*>(display_);
-                if (lcd == nullptr) {
-                    return false;
-                }
-                bool result = lcd->SetRotation(degrees);
-                if (result) {
-                    current_rotation_ = degrees;
-                }
-                return result;
-            });
-
-        mcp_server.AddTool(
-            "self.screen.set_brightness",
-            "Set screen brightness. 0 turns the screen backlight off; 1-100 turns it on.",
-            PropertyList({
-                Property("brightness", kPropertyTypeInteger, 0, 100)
-            }),
-            [this](const PropertyList& properties) -> ReturnValue {
-                int brightness = properties["brightness"].value<int>();
-                SetScreenBrightness(static_cast<uint8_t>(brightness));
-                return true;
-            });
-    }
-
-public:
-    Df_K10Board() {
-        InitializeI2c();
-        InitializeIoExpander();
-        InitializeSpi();
-        InitializeIli9341Display();
-        InitializeButtons();
-        InitializeIot();
-        // Eager camera init at boot to reserve DMA buffer (15360B) before media playback fragments heap
-        LogHeap("camera boot init: before");
-        InitializeCamera();
-        LogHeap("camera boot init: after");
-        if (camera_) {
-            camera_->SetExplainUrl("https://genius.minjiai.my.id/api/vision/search", "");
-        } else {
-            ESP_LOGE(TAG, "Camera boot init failed - continuing without camera");
-        }
-        InitializeSensors();
-    }
-
-    virtual Led* GetLed() override {
-        return led_strip_;
-    }
-
-    void StartNetwork() override {
-        WifiBoard::StartNetwork();
-        launcher_.MountSd();
-#ifdef CONFIG_GENIUS_DEVICE_CORE
-        GeniusNativeServices::GetInstance().Start();
-#endif
-    }
-    virtual AudioCodec *GetAudioCodec() override {
-        static K10AudioCodec audio_codec(
-                    i2c_bus_,
-                    AUDIO_INPUT_SAMPLE_RATE,
-                    AUDIO_OUTPUT_SAMPLE_RATE,
-                    AUDIO_I2S_GPIO_MCLK,
-                    AUDIO_I2S_GPIO_BCLK,
-                    AUDIO_I2S_GPIO_WS,
-                    AUDIO_I2S_GPIO_DOUT,
-                    AUDIO_I2S_GPIO_DIN,
-                    AUDIO_CODEC_PA_PIN,
-                    AUDIO_CODEC_ES8311_ADDR,
-                    AUDIO_CODEC_ES7210_ADDR,
-                    AUDIO_INPUT_REFERENCE);
-        return &audio_codec;
-    }
-
-    virtual Camera* GetCamera() override {
-        std::lock_guard<std::mutex> lock(camera_mutex_);
-        if (!camera_) {
-            LogHeap("camera init: before");
-            InitializeCamera();
-            LogHeap("camera init: after");
-            if (camera_) {
-                // K10 vision is resolved by Genius. Set the explain URL here
-                // so Alexa Vision works on first use without boot-time init.
-                // (Settings API is available via genius/native_services.h)
-                camera_->SetExplainUrl("https://genius.minjiai.my.id/api/vision/search", "");
-            }
-        }
-        return camera_;
-    }
-
-    virtual void DeinitCamera() override {
-        std::lock_guard<std::mutex> lock(camera_mutex_);
-        if (camera_) {
-            LogHeap("camera deinit: before");
-            delete camera_;
-            camera_ = nullptr;
-            LogHeap("camera deinit: after");
-        }
-    }
-
-    void SetScreenBrightness(uint8_t brightness) {
-        ESP_ERROR_CHECK(IoExpanderSetLevel(
-            IO_EXPANDER_PIN_NUM_0,
-            brightness > 0 ? 1 : 0
-        ));
-        ESP_LOGI(TAG, "Screen backlight: %s (%u%%)",
-                 brightness > 0 ? "ON" : "OFF",
-                 (unsigned)brightness);
-    }
-    virtual Display *GetDisplay() override {
-        return display_;
-    }
-};
-
-DECLARE_BOARD(Df_K10Board);
-
-Df_K10Board* Df_K10Board::instance_ = nullptr;
+#include "genius/portal.h"
+#include "genius/native_services.h"
+#include "genius/genius_v2_client.h"
+#include "wifi_board.h"
+#include "k10_audio_codec.h"
+#include "display/lcd_display.h"
+#include "k10_launcher.h"
+#include "esp_lcd_ili9341.h"
+#include "led_control.h"
+#include "application.h"
+#include "mcp_server.h"
+#include "button.h"
+#include "config.h"
+#include "esp_video.h"
+
+#include "led/circular_strip.h"
+#include "assets/lang_config.h"
+
+#include <esp_log.h>
+#include <esp_idf_version.h>
+#include <esp_lcd_panel_vendor.h>
+#include <driver/i2c_master.h>
+#include <driver/spi_common.h>
+#include <driver/sdspi_host.h>
+#include <esp_vfs_fat.h>
+#include <sdmmc_cmd.h>
+
+#include "esp_io_expander_tca95xx_16bit.h"
+
+#include <mutex>
+#include <esp_heap_caps.h>
+
+#define TAG "DF-K10"
+
+// Kalibrasi suhu AHT20: sensor nempel PCB kena self-heating ESP32-S3.
+// Nilai negatif = kurangi bacaan. Tweak sesuai tes HW.
+static constexpr float K10_TEMP_OFFSET_C = -11.5f;
+
+class Df_K10Board : public WifiBoard {
+private:
+    i2c_master_bus_handle_t i2c_bus_;
+    esp_io_expander_handle_t io_expander;
+    LcdDisplay *display_;
+    button_handle_t btn_a;
+    button_handle_t btn_b;
+    EspVideo* camera_ = nullptr;
+    std::mutex camera_mutex_;
+
+    button_driver_t* btn_a_driver_ = nullptr;
+    button_driver_t* btn_b_driver_ = nullptr;
+
+    CircularStrip* led_strip_;
+    K10Launcher launcher_;
+
+    static Df_K10Board* instance_;
+
+    void InitializeI2c() {
+        // Initialize I2C peripheral
+        i2c_master_bus_config_t i2c_bus_cfg = {
+                .i2c_port = (i2c_port_t)1,
+                .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
+                .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
+                .clk_source = I2C_CLK_SRC_DEFAULT,
+                .glitch_ignore_cnt = 7,
+                .intr_priority = 0,
+                .trans_queue_depth = 0,
+                .flags = {
+                                .enable_internal_pullup = 1,
+                        },
+        };
+        ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
+    }
+
+    i2c_master_dev_handle_t aht_ = nullptr;
+    i2c_master_dev_handle_t als_ = nullptr;
+    i2c_master_dev_handle_t imu_ = nullptr;
+
+    bool auto_rotate_enabled_ = false;
+    TaskHandle_t auto_rotate_task_ = nullptr;
+    int current_rotation_ = 0;
+
+    static void AutoRotateTask(void* arg) {
+        auto self = static_cast<Df_K10Board*>(arg);
+
+        int candidate = self->current_rotation_;
+        int stable_count = 0;
+
+
+        while (true) {
+            uint8_t reg = 0x28 | 0x80;
+            uint8_t xyz[6] = {};
+
+            esp_err_t ret = i2c_master_transmit_receive(
+                self->imu_, &reg, 1, xyz, sizeof(xyz), 100);
+
+            if (ret == ESP_OK) {
+                int16_t x = (int16_t)((xyz[1] << 8) | xyz[0]) >> 4;
+                int16_t y = (int16_t)((xyz[3] << 8) | xyz[2]) >> 4;
+                int16_t z = (int16_t)((xyz[5] << 8) | xyz[4]) >> 4;
+
+                if (!self->auto_rotate_enabled_) {
+                    stable_count = 0;
+                    vTaskDelay(pdMS_TO_TICKS(250));
+                    continue;
+                }
+
+                int next = self->current_rotation_;
+
+                // Ignore near-flat/ambiguous positions.
+                if (abs(x) > 650 && abs(x) > abs(y) + 200) {
+                    next = (x > 0) ? 90 : 270;
+                } else if (abs(y) > 650 && abs(y) > abs(x) + 200) {
+                    next = (y > 0) ? 0 : 180;
+                }
+
+                if (next != self->current_rotation_) {
+                    if (next == candidate) {
+                        stable_count++;
+                    } else {
+                        candidate = next;
+                        stable_count = 1;
+                    }
+
+                    // About 0.75 s stable before rotating.
+                    if (stable_count >= 3) {
+                        auto lcd = static_cast<LcdDisplay*>(self->display_);
+                        if (lcd != nullptr && lcd->SetRotation(next)) {
+                            self->current_rotation_ = next;
+                            ESP_LOGI(TAG, "Auto rotation -> %d (x=%d y=%d)",
+                                     next, x, y);
+                        }
+                        stable_count = 0;
+                    }
+                } else {
+                    candidate = next;
+                    stable_count = 0;
+                }
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+    }
+
+    void SetAutoRotate(bool enabled) {
+        auto_rotate_enabled_ = enabled;
+
+        // Task IMU sudah dibuat di InitializeSensors; di sini cuma flag.
+        ESP_LOGI(TAG, "Auto rotate: %s", enabled ? "ON" : "OFF");
+    }
+
+    void InitializeSensors() {
+        i2c_device_config_t cfg = {};
+        cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        cfg.scl_speed_hz = 100000;
+
+        cfg.device_address = 0x38;
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_, &cfg, &aht_));
+
+        cfg.device_address = 0x29;
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_, &cfg, &als_));
+
+        cfg.device_address = 0x19;
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_, &cfg, &imu_));
+
+        uint8_t als_ctrl[] = {0x80, 0x01};
+        uint8_t als_rate[] = {0x85, 0x03};
+        ESP_ERROR_CHECK(i2c_master_transmit(als_, als_ctrl, sizeof(als_ctrl), 100));
+        ESP_ERROR_CHECK(i2c_master_transmit(als_, als_rate, sizeof(als_rate), 100));
+
+        uint8_t status_cmd = 0x71;
+        uint8_t status = 0;
+        ESP_ERROR_CHECK(i2c_master_transmit_receive(
+            aht_, &status_cmd, 1, &status, 1, 100));
+
+        if ((status & 0x08) == 0) {
+            uint8_t init_cmd[] = {0xBE, 0x08, 0x00};
+            ESP_ERROR_CHECK(i2c_master_transmit(
+                aht_, init_cmd, sizeof(init_cmd), 100));
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        uint8_t imu_ctrl1[] = {0x20, 0x57};
+        ESP_ERROR_CHECK(i2c_master_transmit(
+            imu_, imu_ctrl1, sizeof(imu_ctrl1), 100));
+
+        // IMU task selalu jalan (lift-to-talk + auto-rotate).
+        if (auto_rotate_task_ == nullptr) {
+            xTaskCreate(AutoRotateTask, "k10_imu", 4096, this, 3, &auto_rotate_task_);
+        }
+
+        ESP_LOGI(TAG, "K10 sensors ready: AHT20 LTR303 SC7A20H");
+    }
+
+    std::string ReadSensors() {
+        float temperature = 0;
+        float humidity = 0;
+        uint16_t lux = 0;
+        int16_t x = 0, y = 0, z = 0;
+
+        uint8_t measure[] = {0xAC, 0x33, 0x00};
+        uint8_t data[6] = {};
+
+        esp_err_t aht_ret =
+            i2c_master_transmit(aht_, measure, sizeof(measure), 100);
+
+        if (aht_ret == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(80));
+            aht_ret = i2c_master_receive(aht_, data, sizeof(data), 100);
+        }
+
+        if (aht_ret == ESP_OK && !(data[0] & 0x80)) {
+            uint32_t raw_h =
+                ((uint32_t)data[1] << 12) |
+                ((uint32_t)data[2] << 4) |
+                (data[3] >> 4);
+
+            uint32_t raw_t =
+                ((uint32_t)(data[3] & 0x0F) << 16) |
+                ((uint32_t)data[4] << 8) |
+                data[5];
+
+            humidity = raw_h * 100.0f / 1048576.0f;
+            temperature = raw_t * 200.0f / 1048576.0f - 50.0f + K10_TEMP_OFFSET_C;
+        }
+
+        uint8_t reg = 0x88;
+        uint8_t light[4] = {};
+
+        esp_err_t als_ret =
+            i2c_master_transmit_receive(
+                als_, &reg, 1, light, sizeof(light), 100);
+
+        if (als_ret == ESP_OK) {
+            uint16_t ch1 = ((uint16_t)light[1] << 8) | light[0];
+            uint16_t ch0 = ((uint16_t)light[3] << 8) | light[2];
+
+            float sum = (float)ch0 + ch1;
+            float ratio = sum > 0 ? ch1 / sum : 1.0f;
+            float value = 0;
+
+            if (ratio < 0.45f)
+                value = 1.7743f * ch0 + 1.1059f * ch1;
+            else if (ratio < 0.64f)
+                value = 4.2785f * ch0 - 1.9548f * ch1;
+            else if (ratio < 0.85f)
+                value = 0.5926f * ch0 + 0.1185f * ch1;
+
+            if (value > 0)
+                lux = (uint16_t)value;
+        }
+
+        uint8_t imu_reg = 0x28 | 0x80;
+        uint8_t xyz[6] = {};
+
+        esp_err_t imu_ret =
+            i2c_master_transmit_receive(
+                imu_, &imu_reg, 1, xyz, sizeof(xyz), 100);
+
+        if (imu_ret == ESP_OK) {
+            x = (int16_t)((xyz[1] << 8) | xyz[0]) >> 4;
+            y = (int16_t)((xyz[3] << 8) | xyz[2]) >> 4;
+            z = (int16_t)((xyz[5] << 8) | xyz[4]) >> 4;
+        }
+
+        if (aht_ret != ESP_OK || als_ret != ESP_OK || imu_ret != ESP_OK) {
+            return "{\"error\":\"sensor read failed\"}";
+        }
+
+        char result[256];
+        snprintf(result, sizeof(result),
+            "{\"temperature_c\":%.2f,\"humidity_percent\":%.2f,"
+            "\"light_lux\":%u,\"accelerometer\":{\"x\":%d,\"y\":%d,\"z\":%d}}",
+            temperature, humidity, lux, x, y, z);
+
+        ESP_LOGI(TAG, "Sensor read: %s", result);
+        return std::string(result);
+    }
+    void InitializeSdCardTest() {
+        constexpr spi_host_device_t SD_HOST = SPI2_HOST;
+
+        spi_bus_config_t bus_cfg = {};
+        bus_cfg.mosi_io_num = GPIO_NUM_42; // DFRobot official
+        bus_cfg.miso_io_num = GPIO_NUM_41; // DFRobot official
+        bus_cfg.sclk_io_num = GPIO_NUM_44; // DFRobot official
+        bus_cfg.quadwp_io_num = GPIO_NUM_NC;
+        bus_cfg.quadhd_io_num = GPIO_NUM_NC;
+        bus_cfg.max_transfer_sz = 4096;
+
+        esp_err_t ret = spi_bus_initialize(SD_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "TF: spi_bus_initialize failed: %s", esp_err_to_name(ret));
+            return;
+        }
+
+        sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+        slot_config.host_id = SD_HOST;
+        slot_config.gpio_cs = GPIO_NUM_40; // DFRobot official
+
+        esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
+        mount_config.format_if_mount_failed = false;
+        mount_config.max_files = 5;
+        mount_config.allocation_unit_size = 16 * 1024;
+
+        sdmmc_card_t* card = nullptr;
+
+        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+        host.slot = SD_HOST;
+
+        ret = esp_vfs_fat_sdspi_mount(
+            "/sdcard",
+            &host,
+            &slot_config,
+            &mount_config,
+            &card
+        );
+
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "TF: mount failed: %s", esp_err_to_name(ret));
+            spi_bus_free(SD_HOST);
+            return;
+        }
+
+        ESP_LOGI(TAG, "TF: mounted OK");
+        sdmmc_card_print_info(stdout, card);
+    }
+    void InitializeSpi() {
+        spi_bus_config_t buscfg = {};
+        buscfg.mosi_io_num = GPIO_NUM_21;
+        buscfg.miso_io_num = GPIO_NUM_NC; // LCD ILI9341 is write-only, does not need MISO. Free GPIO41 for SD card SPI2
+        buscfg.sclk_io_num = GPIO_NUM_12;
+        buscfg.quadwp_io_num = GPIO_NUM_NC;
+        buscfg.quadhd_io_num = GPIO_NUM_NC;
+        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
+        ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
+    }
+
+    esp_err_t IoExpanderSetLevel(uint16_t pin_mask, uint8_t level) {
+        return esp_io_expander_set_level(io_expander, pin_mask, level);
+    }
+
+    uint8_t IoExpanderGetLevel(uint16_t pin_mask) {
+        uint32_t pin_val = 0;
+        esp_io_expander_get_level(io_expander, DRV_IO_EXP_INPUT_MASK, &pin_val);
+
+        pin_mask &= DRV_IO_EXP_INPUT_MASK;
+        return (uint8_t)((pin_val & pin_mask) ? 1 : 0);
+    }
+
+    void InitializeIoExpander() {
+        esp_io_expander_new_i2c_tca95xx_16bit(
+                i2c_bus_, ESP_IO_EXPANDER_I2C_TCA9555_ADDRESS_000, &io_expander);
+
+        esp_err_t ret;
+        ret = esp_io_expander_print_state(io_expander);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Print state failed: %s", esp_err_to_name(ret));
+        }
+
+        ret = esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_OUTPUT);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Set direction failed: %s", esp_err_to_name(ret));
+        }
+        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 0);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Set level failed: %s", esp_err_to_name(ret));
+        }
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 1);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Set level failed: %s", esp_err_to_name(ret));
+        }
+        ret = esp_io_expander_set_dir(
+                io_expander, DRV_IO_EXP_INPUT_MASK,
+                IO_EXPANDER_INPUT);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Set direction failed: %s", esp_err_to_name(ret));
+        }
+    }
+
+    void InitializeButtons() {
+        instance_ = this;
+
+        // Button A
+        button_config_t btn_a_config = {
+            .long_press_time = 1000,
+            .short_press_time = 0
+        };
+        btn_a_driver_ = (button_driver_t*)calloc(1, sizeof(button_driver_t));
+        btn_a_driver_->enable_power_save = false;
+        btn_a_driver_->get_key_level = [](button_driver_t *button_driver) -> uint8_t {
+            return !instance_->IoExpanderGetLevel(IO_EXPANDER_PIN_NUM_12);
+        };
+        ESP_ERROR_CHECK(iot_button_create(&btn_a_config, btn_a_driver_, &btn_a));
+        iot_button_register_cb(btn_a, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            Application::GetInstance().WakeK10LcdFromButton();
+            if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryNext(); return; }
+            if (self->launcher_.IsPhotoMode()) { self->launcher_.RetakePhoto(); return; }
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryNext(); return; }
+            if (self->launcher_.IsRecorderMode()) { self->launcher_.RecorderTogglePlayback(); return; }
+            if (self->launcher_.IsOpen()) { self->launcher_.Next(); return; }
+            auto codec = self->GetAudioCodec();
+            auto volume = codec->output_volume() + 10;
+            if (volume > 100) volume = 100;
+            codec->SetOutputVolume(volume);
+            self->GetDisplay()->ShowNotification(
+                Lang::Strings::VOLUME + std::to_string(volume));
+
+        }, this);
+        iot_button_register_cb(btn_a, BUTTON_DOUBLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryTogglePlay(); return; }
+            auto& app = Application::GetInstance();
+            if (app.IsGeniusMediaActive() || app.GetDeviceState() == kDeviceStateNotifying) {
+                ESP_LOGI(TAG, "Button A double click: stop media");
+                app.StopGeniusPlayback();
+            }
+        }, this);
+        iot_button_register_cb(btn_a, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            auto& app = Application::GetInstance();
+            if (self->launcher_.IsPhotoMode()) { self->launcher_.ExitPhoto(); return; }
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.ExitRecGallery(); return; }
+            if (self->launcher_.IsRecorderMode()) { self->launcher_.ExitRecorder(); return; }
+            if (self->launcher_.IsOpen()) {
+                self->launcher_.Close();
+            }
+            if (app.IsGeniusMediaActive() || app.GetDeviceState() == kDeviceStateNotifying) {
+                ESP_LOGI(TAG, "Button A long press: stop media");
+                app.StopGeniusPlayback();
+                return;
+            }
+            ESP_LOGI(TAG, "Button A long press: WiFi provisioning");
+            self->EnterWifiConfigMode();
+        }, this);
+
+        // Button B
+        button_config_t btn_b_config = {
+            .long_press_time = 1500,
+            .short_press_time = 0
+        };
+        btn_b_driver_ = (button_driver_t*)calloc(1, sizeof(button_driver_t));
+        btn_b_driver_->enable_power_save = false;
+        btn_b_driver_->get_key_level = [](button_driver_t *button_driver) -> uint8_t {
+            return !instance_->IoExpanderGetLevel(IO_EXPANDER_PIN_NUM_2);
+        };
+        ESP_ERROR_CHECK(iot_button_create(&btn_b_config, btn_b_driver_, &btn_b));
+        iot_button_register_cb(btn_b, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            Application::GetInstance().WakeK10LcdFromButton();
+            if (self->launcher_.IsGalleryMode()) { self->launcher_.GalleryPrev(); return; }
+            if (self->launcher_.IsPhotoMode()) { self->launcher_.FreezePhoto(); return; }
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryPrev(); return; }
+            if (self->launcher_.IsRecorderMode()) { self->launcher_.RecorderToggleRecord(); return; }
+            if (self->launcher_.IsOpen()) { self->launcher_.Select(); return; }
+            auto codec = self->GetAudioCodec();
+            auto volume = codec->output_volume() - 10;
+            if (volume < 0) volume = 0;
+            codec->SetOutputVolume(volume);
+            self->GetDisplay()->ShowNotification(
+                Lang::Strings::VOLUME + std::to_string(volume));
+
+        }, this);
+        iot_button_register_cb(btn_b, BUTTON_DOUBLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryTogglePlay(); return; }
+            auto& app = Application::GetInstance();
+            if (app.IsGeniusMediaActive() || app.GetDeviceState() == kDeviceStateNotifying) {
+                ESP_LOGI(TAG, "Button B double click: stop media");
+                app.StopGeniusPlayback();
+            }
+        }, this);
+        iot_button_register_cb(btn_b, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
+            auto self = static_cast<Df_K10Board*>(usr_data);
+            auto& app = Application::GetInstance();
+            if (self->launcher_.IsRecGalleryMode()) { self->launcher_.RecGalleryPrev(); return; }
+            if (app.IsGeniusMediaActive() || app.GetDeviceState() == kDeviceStateNotifying) {
+                ESP_LOGI(TAG, "Button B long press: stop media");
+                app.StopGeniusPlayback();
+                return;
+            }
+            ESP_LOGI(TAG, "Button B long press: Open launcher");
+            self->launcher_.Open();
+        }, this);
+    }
+
+    void LogHeap(const char* context) {
+        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "Heap [%s]: free_internal=%u largest_block=%u",
+                 context, (unsigned)free_internal, (unsigned)largest_block);
+    }
+
+    void InitializeCamera() {
+        static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
+            .data_width = CAM_CTLR_DATA_WIDTH_8,
+            .data_io = {
+                [0] = CAMERA_PIN_D2,
+                [1] = CAMERA_PIN_D3,
+                [2] = CAMERA_PIN_D4,
+                [3] = CAMERA_PIN_D5,
+                [4] = CAMERA_PIN_D6,
+                [5] = CAMERA_PIN_D7,
+                [6] = CAMERA_PIN_D8,
+                [7] = CAMERA_PIN_D9,
+            },
+            .vsync_io = CAMERA_PIN_VSYNC,
+            .de_io = CAMERA_PIN_HREF,
+            .pclk_io = CAMERA_PIN_PCLK,
+            .xclk_io = CAMERA_PIN_XCLK,
+        };
+
+        esp_video_init_sccb_config_t sccb_config = {
+            .init_sccb = false,
+            .i2c_handle = i2c_bus_,
+            .freq = 100000,
+        };
+
+        esp_video_init_dvp_config_t dvp_config = {
+            .sccb_config = sccb_config,
+            .reset_pin = CAMERA_PIN_RESET,
+            .pwdn_pin = CAMERA_PIN_PWDN,
+            .dvp_pin = dvp_pin_config,
+            .xclk_freq = XCLK_FREQ_HZ,
+        };
+
+        esp_video_init_config_t video_config = {
+            .dvp = &dvp_config,
+        };
+
+        camera_ = new EspVideo(video_config);
+    }
+
+    void InitializeIli9341Display() {
+        esp_lcd_panel_io_handle_t panel_io = nullptr;
+        esp_lcd_panel_handle_t panel = nullptr;
+
+        // Install panel IO
+        ESP_LOGD(TAG, "Install panel IO");
+        esp_lcd_panel_io_spi_config_t io_config = {};
+        io_config.cs_gpio_num = GPIO_NUM_14;
+        io_config.dc_gpio_num = GPIO_NUM_13;
+        io_config.spi_mode = 0;
+        io_config.pclk_hz = 40 * 1000 * 1000;
+        io_config.trans_queue_depth = 10;
+        io_config.lcd_cmd_bits = 8;
+        io_config.lcd_param_bits = 8;
+        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
+
+        // Install LCD driver
+        ESP_LOGD(TAG, "Install LCD driver");
+        esp_lcd_panel_dev_config_t panel_config = {};
+        panel_config.reset_gpio_num = GPIO_NUM_NC;
+        panel_config.bits_per_pixel = 16;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+        panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+#else
+        panel_config.color_space = ESP_LCD_COLOR_SPACE_BGR;
+#endif
+
+        ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
+        ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
+        ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
+        ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, DISPLAY_BACKLIGHT_OUTPUT_INVERT));
+        ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));
+        ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
+        ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
+
+        display_ = new SpiLcdDisplay(panel_io, panel,
+                                DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+    }
+
+    // Initialize IoT & MCP tools
+    void InitializeIot() {
+        led_strip_ = new CircularStrip(BUILTIN_LED_GPIO, 3);
+        new LedStripControl(led_strip_);
+        auto& mcp_server = McpServer::GetInstance();
+
+        mcp_server.AddTool(
+            "self.system.reconfigure_wifi",
+            "End this conversation and enter WiFi and server configuration mode (hotspot AP mode).\n"
+            "Use this tool when the user asks via voice to configure WiFi, change WiFi, change server, setup network, or enter configuration mode (e.g. 'masuk mode wifi', 'pengaturan wifi', 'ganti server', 'reconfigure wifi').",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                ESP_LOGI(TAG, "Voice command received via MCP: Enter WiFi config mode");
+                EnterWifiConfigMode();
+                return true;
+            });
+
+        mcp_server.AddTool(
+            "self.k10.app.open_recorder",
+            "Open the K10 Recorder app on its LCD. Recording starts only after pressing the physical record button. Use when the user asks to open the recorder app.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (launcher_.IsRecorderMode()) return std::string("Recorder already open");
+                if (launcher_.IsRecGalleryMode() || launcher_.IsPhotoMode() || launcher_.IsGalleryMode())
+                    return std::string("Close the current app first");
+                launcher_.EnterRecorder();
+                return std::string("Recorder opened; use physical buttons to record");
+            });
+
+        mcp_server.AddTool(
+            "self.k10.app.open_recordings_gallery",
+            "Open the K10 saved audio recordings gallery on its LCD. Use when the user asks to open the recording gallery.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (launcher_.IsRecGalleryMode()) return std::string("Recording gallery already open");
+                if (launcher_.IsRecorderMode() || launcher_.IsPhotoMode() || launcher_.IsGalleryMode())
+                    return std::string("Close the current app first");
+                launcher_.EnterRecGallery();
+                return std::string("Recording gallery opened; use physical buttons to browse and play");
+            });
+
+        mcp_server.AddTool(
+            "self.k10.recording.delete_request",
+            "PHASE 1: Request deletion of K10 audio recording(s). Does NOT delete yet. "
+            "Target can be a filename like 'REC_000003.wav', 'latest' for the newest recording, "
+            "or 'all' for ALL recordings. Returns file details and a confirmation token. "
+            "You MUST ask the user to confirm with the exact details before calling delete_confirm. "
+            "For 'all', warn clearly that EVERY recording will be permanently deleted.",
+            PropertyList({
+                Property("target", kPropertyTypeString),
+            }),
+            [this](const PropertyList& props) -> ReturnValue {
+                std::string target = props["target"].value<std::string>();
+                auto info = launcher_.RecorderDeleteRequest(target);
+                if (!info.valid) return std::string("Delete request failed: ") + info.error;
+                char buf[256];
+                if (info.filename == "all") {
+                    snprintf(buf, sizeof(buf),
+                        "CONFIRM REQUIRED: Delete ALL %ld recordings (%ld KB total)? "
+                        "This cannot be undone. Token: %s. "
+                        "Ask user: 'Delete all %ld recordings permanently?'",
+                        info.duration_sec, info.size_bytes / 1024,
+                        info.token.c_str(), info.duration_sec);
+                } else {
+                    snprintf(buf, sizeof(buf),
+                        "CONFIRM REQUIRED: Delete %s (%ld sec, %ld KB)? "
+                        "Token: %s. Ask user to confirm.",
+                        info.filename.c_str(), info.duration_sec,
+                        info.size_bytes / 1024, info.token.c_str());
+                }
+                return std::string(buf);
+            });
+
+        mcp_server.AddTool(
+            "self.k10.recording.delete_confirm",
+            "PHASE 2: Execute confirmed deletion. Only call after the user explicitly confirmed "
+            "the exact target from delete_request. The token must match the one from delete_request. "
+            "If the file changed since the request, the token will not match and deletion is refused.",
+            PropertyList({
+                Property("target", kPropertyTypeString),
+                Property("token", kPropertyTypeString),
+            }),
+            [this](const PropertyList& props) -> ReturnValue {
+                std::string target = props["target"].value<std::string>();
+                std::string token = props["token"].value<std::string>();
+                return launcher_.RecorderDeleteConfirm(target, token);
+            });
+
+        mcp_server.AddTool(
+            "self.k10.sdcard.list_recordings",
+            "List WAV recording filenames stored on this K10 SD card, read-only. Use when the user asks which recordings are saved on the SD card.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                return launcher_.ListRecordingsForMcp();
+            });
+
+        mcp_server.AddTool(
+            "self.k10.sensors",
+            "Read the K10 onboard sensors: temperature, humidity, ambient light and accelerometer.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                return ReadSensors();
+            });
+        mcp_server.AddTool(
+            "self.screen.set_auto_rotation",
+            "Enable or disable automatic screen rotation using the K10 accelerometer.",
+            PropertyList({
+                Property("enabled", kPropertyTypeBoolean)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                bool enabled = properties["enabled"].value<bool>();
+                SetAutoRotate(enabled);
+                return true;
+            });
+        mcp_server.AddTool(
+            "self.screen.set_rotation",
+            "Rotate the screen. Supported angles are 0, 90, 180, and 270 degrees.",
+            PropertyList({
+                Property("degrees", kPropertyTypeInteger, 0, 270)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int degrees = properties["degrees"].value<int>();
+                auto lcd = static_cast<LcdDisplay*>(display_);
+                if (lcd == nullptr) {
+                    return false;
+                }
+                bool result = lcd->SetRotation(degrees);
+                if (result) {
+                    current_rotation_ = degrees;
+                }
+                return result;
+            });
+
+        mcp_server.AddTool(
+            "self.screen.set_brightness",
+            "Set screen brightness. 0 turns the screen backlight off; 1-100 turns it on.",
+            PropertyList({
+                Property("brightness", kPropertyTypeInteger, 0, 100)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int brightness = properties["brightness"].value<int>();
+                SetScreenBrightness(static_cast<uint8_t>(brightness));
+                return true;
+            });
+    }
+
+public:
+    Df_K10Board() {
+        InitializeI2c();
+        InitializeIoExpander();
+        InitializeSpi();
+        InitializeIli9341Display();
+        InitializeButtons();
+        InitializeIot();
+        // Eager camera init at boot to reserve DMA buffer (15360B) before media playback fragments heap
+        LogHeap("camera boot init: before");
+        InitializeCamera();
+        LogHeap("camera boot init: after");
+        if (camera_) {
+            camera_->SetExplainUrl("https://genius.minjiai.my.id/api/vision/search", "");
+        } else {
+            ESP_LOGE(TAG, "Camera boot init failed - continuing without camera");
+        }
+        InitializeSensors();
+    }
+
+    virtual Led* GetLed() override {
+        return led_strip_;
+    }
+
+    void StartNetwork() override {
+        WifiBoard::StartNetwork();
+        launcher_.MountSd();
+#ifdef CONFIG_GENIUS_DEVICE_CORE
+        if (GeniusV2Client::GetInstance().IsEnabled()) {
+            GeniusNativeServices::GetInstance().Start();
+        }
+#endif
+    }
+    virtual AudioCodec *GetAudioCodec() override {
+        static K10AudioCodec audio_codec(
+                    i2c_bus_,
+                    AUDIO_INPUT_SAMPLE_RATE,
+                    AUDIO_OUTPUT_SAMPLE_RATE,
+                    AUDIO_I2S_GPIO_MCLK,
+                    AUDIO_I2S_GPIO_BCLK,
+                    AUDIO_I2S_GPIO_WS,
+                    AUDIO_I2S_GPIO_DOUT,
+                    AUDIO_I2S_GPIO_DIN,
+                    AUDIO_CODEC_PA_PIN,
+                    AUDIO_CODEC_ES8311_ADDR,
+                    AUDIO_CODEC_ES7210_ADDR,
+                    AUDIO_INPUT_REFERENCE);
+        return &audio_codec;
+    }
+
+    virtual Camera* GetCamera() override {
+        std::lock_guard<std::mutex> lock(camera_mutex_);
+        if (!camera_) {
+            LogHeap("camera init: before");
+            InitializeCamera();
+            LogHeap("camera init: after");
+            if (camera_) {
+                // K10 vision is resolved by Genius. Set the explain URL here
+                // so Alexa Vision works on first use without boot-time init.
+                // (Settings API is available via genius/native_services.h)
+                camera_->SetExplainUrl("https://genius.minjiai.my.id/api/vision/search", "");
+            }
+        }
+        return camera_;
+    }
+
+    virtual void DeinitCamera() override {
+        std::lock_guard<std::mutex> lock(camera_mutex_);
+        if (camera_) {
+            LogHeap("camera deinit: before");
+            delete camera_;
+            camera_ = nullptr;
+            LogHeap("camera deinit: after");
+        }
+    }
+
+    void SetScreenBrightness(uint8_t brightness) {
+        ESP_ERROR_CHECK(IoExpanderSetLevel(
+            IO_EXPANDER_PIN_NUM_0,
+            brightness > 0 ? 1 : 0
+        ));
+        ESP_LOGI(TAG, "Screen backlight: %s (%u%%)",
+                 brightness > 0 ? "ON" : "OFF",
+                 (unsigned)brightness);
+    }
+    virtual Display *GetDisplay() override {
+        return display_;
+    }
+};
+
+DECLARE_BOARD(Df_K10Board);
+
+Df_K10Board* Df_K10Board::instance_ = nullptr;

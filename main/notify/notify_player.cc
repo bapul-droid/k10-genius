@@ -58,8 +58,7 @@ bool IsSupportedUrl(const std::string& url) {
 }
 
 bool IsGeniusLiveMediaUrl(const std::string& url) {
-    constexpr const char* kPrefix = "https://genius.minjiai.my.id/media/stream/";
-    return url.compare(0, strlen(kPrefix), kPrefix) == 0 &&
+    return url.find("/media/stream/") != std::string::npos &&
            url.find("live=1") != std::string::npos;
 }
 }  // namespace

@@ -218,6 +218,20 @@ void WifiConfigurationAp::StartAccessPoint()
 
         nvs_close(nvs);
     }
+
+    nvs_handle_t genius_nvs;
+    if (nvs_open("genius", NVS_READONLY, &genius_nvs) == ESP_OK) {
+        uint8_t enabled = 0;
+        if (nvs_get_u8(genius_nvs, "enabled", &enabled) == ESP_OK) {
+            genius_enabled_ = (enabled != 0);
+        }
+        char domain[256] = {0};
+        size_t domain_size = sizeof(domain);
+        if (nvs_get_str(genius_nvs, "domain", domain, &domain_size) == ESP_OK) {
+            genius_domain_ = domain;
+        }
+        nvs_close(genius_nvs);
+    }
 }
 
 void WifiConfigurationAp::OnProvisioningValue(
@@ -421,6 +435,34 @@ void WifiConfigurationAp::StartWebServer()
             this_->Save(ssid_str, password_str);
 
             // Forward optional application-specific provisioning values.
+            cJSON *ota_url_item = cJSON_GetObjectItemCaseSensitive(json, "ota_url");
+            if (cJSON_IsString(ota_url_item) && ota_url_item->valuestring != nullptr) {
+                this_->ota_url_ = ota_url_item->valuestring;
+                nvs_handle_t nvs_w;
+                if (nvs_open("wifi", NVS_READWRITE, &nvs_w) == ESP_OK) {
+                    nvs_set_str(nvs_w, "ota_url", this_->ota_url_.c_str());
+                    nvs_commit(nvs_w);
+                    nvs_close(nvs_w);
+                }
+                if (this_->on_provisioning_value_) {
+                    this_->on_provisioning_value_("ota_url", ota_url_item->valuestring);
+                }
+            }
+
+            cJSON *genius_enabled_item = cJSON_GetObjectItemCaseSensitive(json, "genius_enabled");
+            if (cJSON_IsBool(genius_enabled_item)) {
+                this_->genius_enabled_ = cJSON_IsTrue(genius_enabled_item);
+                nvs_handle_t nvs_g;
+                if (nvs_open("genius", NVS_READWRITE, &nvs_g) == ESP_OK) {
+                    nvs_set_u8(nvs_g, "enabled", this_->genius_enabled_ ? 1 : 0);
+                    nvs_commit(nvs_g);
+                    nvs_close(nvs_g);
+                }
+                if (this_->on_provisioning_value_) {
+                    this_->on_provisioning_value_("genius_enabled", this_->genius_enabled_ ? "1" : "0");
+                }
+            }
+
             cJSON *genius_domain_item =
                 cJSON_GetObjectItemCaseSensitive(json, "genius_domain");
 
@@ -551,6 +593,7 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
             cJSON_AddBoolToObject(json, "show_ota_config", this_->show_ota_config_);
             cJSON_AddBoolToObject(json, "show_sleep_config", this_->show_sleep_config_);
+            cJSON_AddBoolToObject(json, "genius_enabled", this_->genius_enabled_);
             if (!this_->genius_domain_.empty()) {
                 cJSON_AddStringToObject(json, "genius_domain", this_->genius_domain_.c_str());
             }
@@ -666,6 +709,21 @@ void WifiConfigurationAp::StartWebServer()
                 err = nvs_set_u8(nvs, "sleep_mode", this_->sleep_mode_ ? 1 : 0);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to save sleep_mode: %d", err);
+                }
+            }
+
+            // 保存 Genius Enabled & Domain
+            cJSON *genius_enabled = cJSON_GetObjectItem(json, "genius_enabled");
+            if (cJSON_IsBool(genius_enabled)) {
+                this_->genius_enabled_ = cJSON_IsTrue(genius_enabled);
+                nvs_handle_t nvs_g;
+                if (nvs_open("genius", NVS_READWRITE, &nvs_g) == ESP_OK) {
+                    nvs_set_u8(nvs_g, "enabled", this_->genius_enabled_ ? 1 : 0);
+                    nvs_commit(nvs_g);
+                    nvs_close(nvs_g);
+                }
+                if (this_->on_provisioning_value_) {
+                    this_->on_provisioning_value_("genius_enabled", this_->genius_enabled_ ? "1" : "0");
                 }
             }
 
