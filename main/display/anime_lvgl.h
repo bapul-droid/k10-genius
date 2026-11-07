@@ -29,6 +29,7 @@ struct AnimeLvgl {
     uint32_t blink_start_ms = 0;
     bool is_blinking = false;
     bool is_double_blink = false;
+    bool last_drawn_eyes_closed = false;
 };
 
 bool anime_lvgl_start(AnimeLvgl& avatar, lv_obj_t* parent, uint32_t bg_color = 0x000000);

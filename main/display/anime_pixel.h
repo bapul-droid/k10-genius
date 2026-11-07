@@ -52,9 +52,16 @@ void anime_pixel_render_240x320(uint16_t* dst, anime_mode_t mode, uint32_t elaps
                                 float happy, bool wink, bool blink, uint32_t bg_rgb);
 
 /*
- * Patch closed eyes onto destination 240x320 RGB565 buffer in listening mode.
- * Character retains hand on headset while blinking naturally.
+ * Patch closed eyes onto destination 240x320 RGB565 buffer (listening & speaking modes).
  */
+void anime_pixel_patch_closed_eyes(uint16_t* dst);
+
+/*
+ * Restore open eyes from IDLE frame into destination 240x320 RGB565 buffer.
+ */
+void anime_pixel_restore_open_eyes(uint16_t* dst);
+
+/* Compatibility alias for listening mode */
 void anime_pixel_patch_listening_eyes(uint16_t* dst);
 
 /*

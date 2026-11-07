@@ -148,6 +148,7 @@ void render(lv_timer_t* timer) {
             a->current_mouth = ANIME_MOUTH_CLOSED;
             a->last_drawn_mouth = ANIME_MOUTH_CLOSED;
             a->mouth_hold_until_ms = 0;
+            a->last_drawn_eyes_closed = false;
             lv_obj_invalidate(a->canvas);
         }
 
@@ -172,10 +173,27 @@ void render(lv_timer_t* timer) {
             }
         }
 
+        bool need_invalidate = false;
+
         // Only patch and invalidate the mouth ROI when mouth shape changes!
         if (a->current_mouth != a->last_drawn_mouth) {
             anime_pixel_patch_mouth(a->pixels, a->current_mouth);
             a->last_drawn_mouth = a->current_mouth;
+            need_invalidate = true;
+        }
+
+        // Patch eye ROIs when blinking state changes during speaking
+        if (is_blinking != a->last_drawn_eyes_closed) {
+            if (is_blinking) {
+                anime_pixel_patch_closed_eyes(a->pixels);
+            } else {
+                anime_pixel_restore_open_eyes(a->pixels);
+            }
+            a->last_drawn_eyes_closed = is_blinking;
+            need_invalidate = true;
+        }
+
+        if (need_invalidate) {
             lv_obj_invalidate(a->canvas);
         }
     } else {
@@ -186,6 +204,7 @@ void render(lv_timer_t* timer) {
             a->last_drawn_mouth = ANIME_MOUTH_CLOSED;
             lv_obj_invalidate(a->canvas);
         }
+        a->last_drawn_eyes_closed = false;
 
         float level = 0.0f;
         if (mode == ANIME_MODE_LISTENING) {

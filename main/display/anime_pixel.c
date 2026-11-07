@@ -307,7 +307,7 @@ void anime_pixel_render_240x320(uint16_t* dst, anime_mode_t mode, uint32_t elaps
 
     // In listening mode, if blinking, overlay the closed eyes patch (keeping hand on headset stationary)
     if (mode == ANIME_MODE_LISTENING && blink) {
-        anime_pixel_patch_listening_eyes(dst);
+        anime_pixel_patch_closed_eyes(dst);
     }
 
     // In listening mode, render dynamic cyan wave arcs near the headset
@@ -316,7 +316,7 @@ void anime_pixel_render_240x320(uint16_t* dst, anime_mode_t mode, uint32_t elaps
     }
 }
 
-void anime_pixel_patch_listening_eyes(uint16_t* dst) {
+void anime_pixel_patch_closed_eyes(uint16_t* dst) {
     if (!dst) {
         return;
     }
@@ -328,6 +328,24 @@ void anime_pixel_patch_listening_eyes(uint16_t* dst) {
         int dst_idx_r = (ANIME_EYE_RIGHT_Y + y) * ANIME_IMG_W + ANIME_EYE_RIGHT_X;
         memcpy(&dst[dst_idx_r], &g_anime_eye_listen_right[src_idx], ANIME_EYE_W * sizeof(uint16_t));
     }
+}
+
+void anime_pixel_restore_open_eyes(uint16_t* dst) {
+    if (!dst || !s_frames_rgb[ANIME_FRAME_IDLE]) {
+        return;
+    }
+    const uint16_t* idle_src = s_frames_rgb[ANIME_FRAME_IDLE];
+    for (int y = 0; y < ANIME_EYE_H; ++y) {
+        int dst_idx_l = (ANIME_EYE_LEFT_Y + y) * ANIME_IMG_W + ANIME_EYE_LEFT_X;
+        memcpy(&dst[dst_idx_l], &idle_src[dst_idx_l], ANIME_EYE_W * sizeof(uint16_t));
+
+        int dst_idx_r = (ANIME_EYE_RIGHT_Y + y) * ANIME_IMG_W + ANIME_EYE_RIGHT_X;
+        memcpy(&dst[dst_idx_r], &idle_src[dst_idx_r], ANIME_EYE_W * sizeof(uint16_t));
+    }
+}
+
+void anime_pixel_patch_listening_eyes(uint16_t* dst) {
+    anime_pixel_patch_closed_eyes(dst);
 }
 
 void anime_pixel_patch_mouth(uint16_t* dst, anime_mouth_t mouth) {
