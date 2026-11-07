@@ -49,7 +49,13 @@ bool anime_pixel_is_ready(void);
  * Character is completely stationary (no lateral movement or sway).
  */
 void anime_pixel_render_240x320(uint16_t* dst, anime_mode_t mode, uint32_t elapsed_ms, float level,
-                                float happy, bool wink, uint32_t bg_rgb);
+                                float happy, bool wink, bool blink, uint32_t bg_rgb);
+
+/*
+ * Patch closed eyes onto destination 240x320 RGB565 buffer in listening mode.
+ * Character retains hand on headset while blinking naturally.
+ */
+void anime_pixel_patch_listening_eyes(uint16_t* dst);
 
 /*
  * Patch one of the 3 mouth shapes (closed, half, open) into destination 240x320 RGB565 buffer.

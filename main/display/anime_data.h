@@ -49,6 +49,18 @@ typedef enum {
 
 extern const uint16_t g_anime_mouth[ANIME_MOUTH_COUNT][ANIME_MOUTH_PIXELS];
 
+/* Closed eye ROIs for Listening mode natural blink */
+#define ANIME_EYE_W 32
+#define ANIME_EYE_H 28
+#define ANIME_EYE_PIXELS (ANIME_EYE_W * ANIME_EYE_H)
+#define ANIME_EYE_LEFT_X 106
+#define ANIME_EYE_LEFT_Y 106
+#define ANIME_EYE_RIGHT_X 164
+#define ANIME_EYE_RIGHT_Y 106
+
+extern const uint16_t g_anime_eye_listen_left[ANIME_EYE_PIXELS];
+extern const uint16_t g_anime_eye_listen_right[ANIME_EYE_PIXELS];
+
 #ifdef __cplusplus
 }
 #endif

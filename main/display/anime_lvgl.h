@@ -23,6 +23,12 @@ struct AnimeLvgl {
     anime_mouth_t last_drawn_mouth = ANIME_MOUTH_CLOSED;
     uint32_t mouth_hold_until_ms = 0;
     int last_rendered_frame = -1;
+
+    // Natural random blink state machine
+    uint32_t next_blink_ms = 0;
+    uint32_t blink_start_ms = 0;
+    bool is_blinking = false;
+    bool is_double_blink = false;
 };
 
 bool anime_lvgl_start(AnimeLvgl& avatar, lv_obj_t* parent, uint32_t bg_color = 0x000000);

@@ -137,6 +137,55 @@ def main():
         mouth_rgb565.append(mraw)
     print(f"Generated 3 lip-sync mouth shapes ({mouth_w}x{mouth_h} = {mouth_w*mouth_h} px each)")
 
+    # Closed Eye Shapes for Listening mode natural blink
+    eye_left_x, eye_left_y = 106, 106
+    eye_right_x, eye_right_y = 164, 106
+    eye_w, eye_h = 32, 28
+
+    listening_img = Image.open(os.path.join(assets_dir, "listening.png"))
+    blink_img = Image.open(os.path.join(assets_dir, "blink.png"))
+
+    eye_mask = Image.new("L", (eye_w, eye_h), 0)
+    for y in range(eye_h):
+        for x in range(eye_w):
+            dx = min(x, eye_w - 1 - x)
+            dy = min(y, eye_h - 1 - y)
+            d = min(dx, dy)
+            if d == 0:
+                val = 0
+            elif d == 1:
+                val = 120
+            elif d == 2:
+                val = 200
+            else:
+                val = 255
+            eye_mask.putpixel((x, y), val)
+
+    eye_l_raw_open = listening_img.crop((eye_left_x, eye_left_y, eye_left_x + eye_w, eye_left_y + eye_h))
+    eye_l_raw_closed = blink_img.crop((eye_left_x, eye_left_y, eye_left_x + eye_w, eye_left_y + eye_h))
+    eye_left_closed = Image.composite(eye_l_raw_closed, eye_l_raw_open, eye_mask)
+
+    eye_r_raw_open = listening_img.crop((eye_right_x, eye_right_y, eye_right_x + eye_w, eye_right_y + eye_h))
+    eye_r_raw_closed = blink_img.crop((eye_right_x, eye_right_y, eye_right_x + eye_w, eye_right_y + eye_h))
+    eye_right_closed = Image.composite(eye_r_raw_closed, eye_r_raw_open, eye_mask)
+
+    eye_left_closed.save(os.path.join(assets_dir, "eye_listen_left_closed.png"))
+    eye_right_closed.save(os.path.join(assets_dir, "eye_listen_right_closed.png"))
+
+    def to_rgb565_array(img_crop, w, h):
+        pix = img_crop.load()
+        arr = []
+        for y in range(h):
+            for x in range(w):
+                r_c, g_c, b_c = pix[x, y][:3]
+                c565 = ((r_c & 0xF8) << 8) | ((g_c & 0xFC) << 3) | (b_c >> 3)
+                arr.append(c565)
+        return arr
+
+    eye_left_rgb565 = to_rgb565_array(eye_left_closed, eye_w, eye_h)
+    eye_right_rgb565 = to_rgb565_array(eye_right_closed, eye_w, eye_h)
+    print(f"Generated closed eye patches for listening mode ({eye_w}x{eye_h} = {eye_w*eye_h} px each)")
+
     # 1. Generate anime_data.h
     with open(header_path, "w", encoding="utf-8") as f:
         f.write("/*\n")
@@ -171,6 +220,16 @@ def main():
         f.write("    ANIME_MOUTH_COUNT = 3\n")
         f.write("} anime_mouth_t;\n\n")
         f.write("extern const uint16_t g_anime_mouth[ANIME_MOUTH_COUNT][ANIME_MOUTH_PIXELS];\n\n")
+        f.write("/* Closed eye ROIs for Listening mode natural blink */\n")
+        f.write(f"#define ANIME_EYE_W {eye_w}\n")
+        f.write(f"#define ANIME_EYE_H {eye_h}\n")
+        f.write(f"#define ANIME_EYE_PIXELS (ANIME_EYE_W * ANIME_EYE_H)\n")
+        f.write(f"#define ANIME_EYE_LEFT_X {eye_left_x}\n")
+        f.write(f"#define ANIME_EYE_LEFT_Y {eye_left_y}\n")
+        f.write(f"#define ANIME_EYE_RIGHT_X {eye_right_x}\n")
+        f.write(f"#define ANIME_EYE_RIGHT_Y {eye_right_y}\n\n")
+        f.write("extern const uint16_t g_anime_eye_listen_left[ANIME_EYE_PIXELS];\n")
+        f.write("extern const uint16_t g_anime_eye_listen_right[ANIME_EYE_PIXELS];\n\n")
         f.write("#ifdef __cplusplus\n}\n#endif\n")
 
     print(f"Wrote header: {header_path}")
@@ -208,6 +267,19 @@ def main():
                 chunk = m_vals[i:i+8]
                 f.write("        " + ", ".join(f"0x{v:04x}" for v in chunk) + ",\n")
             f.write("    },\n")
+        f.write("};\n\n")
+
+        f.write("/* Closed eyes for listening mode in RGB565 */\n")
+        f.write("const uint16_t g_anime_eye_listen_left[ANIME_EYE_PIXELS] = {\n")
+        for i in range(0, len(eye_left_rgb565), 8):
+            chunk = eye_left_rgb565[i:i+8]
+            f.write("    " + ", ".join(f"0x{v:04x}" for v in chunk) + ",\n")
+        f.write("};\n\n")
+
+        f.write("const uint16_t g_anime_eye_listen_right[ANIME_EYE_PIXELS] = {\n")
+        for i in range(0, len(eye_right_rgb565), 8):
+            chunk = eye_right_rgb565[i:i+8]
+            f.write("    " + ", ".join(f"0x{v:04x}" for v in chunk) + ",\n")
         f.write("};\n")
 
     print(f"Wrote source: {source_path}")

@@ -1,6 +1,7 @@
 #include "anime_lvgl.h"
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_random.h>
 #include <cmath>
 #include <cstring>
 #include "anime_pixel.h"
@@ -12,6 +13,68 @@ constexpr int kH = ANIME_PX_H;               // 320
 constexpr uint32_t kPeriodMs = 50;           // 20 FPS for responsive, natural lip sync
 constexpr uint32_t kHappyDurationMs = 1800;  // 1.8s happy reaction when speaking finishes
 
+bool update_blink_state(AnimeLvgl* a, uint32_t now) {
+    if (!a)
+        return false;
+
+    // First initialization
+    if (a->next_blink_ms == 0) {
+        a->next_blink_ms = now + 1500 + (esp_random() % 2000);
+        a->blink_start_ms = 0;
+        a->is_blinking = false;
+        a->is_double_blink = false;
+        return false;
+    }
+
+    // If currently not in an active blink episode:
+    if (a->blink_start_ms == 0) {
+        if (now >= a->next_blink_ms) {
+            // Start a new blink!
+            a->blink_start_ms = now;
+            // ~25% chance of quick double blink ("kedip 2x cepat")
+            a->is_double_blink = ((esp_random() % 4) == 0);
+            a->is_blinking = true;
+            return true;
+        }
+        return false;
+    }
+
+    // In an active blink episode:
+    uint32_t elapsed = (now >= a->blink_start_ms) ? (now - a->blink_start_ms) : 0;
+
+    if (!a->is_double_blink) {
+        // Single blink: closed for ~150 ms (3 ticks at 50ms)
+        if (elapsed < 150) {
+            a->is_blinking = true;
+        } else {
+            a->is_blinking = false;
+            a->blink_start_ms = 0;
+            // Schedule next random blink interval (2.0s to 5.5s)
+            a->next_blink_ms = now + 2000 + (esp_random() % 3500);
+        }
+    } else {
+        // Quick double blink ("kedip 2x cepat"):
+        // 0..99ms   : closed (~100ms)
+        // 100..199ms: open   (~100ms)
+        // 200..299ms: closed (~100ms)
+        // >= 300ms  : finished
+        if (elapsed < 100) {
+            a->is_blinking = true;
+        } else if (elapsed < 200) {
+            a->is_blinking = false;
+        } else if (elapsed < 300) {
+            a->is_blinking = true;
+        } else {
+            a->is_blinking = false;
+            a->blink_start_ms = 0;
+            // Schedule next random blink interval (2.0s to 5.5s)
+            a->next_blink_ms = now + 2000 + (esp_random() % 3500);
+        }
+    }
+
+    return a->is_blinking;
+}
+
 void render(lv_timer_t* timer) {
     auto* a = static_cast<AnimeLvgl*>(lv_timer_get_user_data(timer));
     if (!a || !a->canvas || !a->pixels)
@@ -22,6 +85,7 @@ void render(lv_timer_t* timer) {
 
     const uint32_t now = lv_tick_get();
     const auto device_state = Application::GetInstance().GetDeviceState();
+    const bool is_blinking = update_blink_state(a, now);
 
     if (a->last_device_state != static_cast<int>(device_state)) {
         if (a->last_device_state == static_cast<int>(kDeviceStateSpeaking)) {
@@ -79,7 +143,7 @@ void render(lv_timer_t* timer) {
     if (mode == ANIME_MODE_SPEAKING) {
         // Base image for speaking is IDLE (stationary, clean hair and face)
         if (mode_changed || a->last_rendered_frame != ANIME_FRAME_IDLE) {
-            anime_pixel_render_240x320(a->pixels, mode, now, 0.0f, 0.0f, false, a->bg_color);
+            anime_pixel_render_240x320(a->pixels, mode, now, 0.0f, 0.0f, false, false, a->bg_color);
             a->last_rendered_frame = ANIME_FRAME_IDLE;
             a->current_mouth = ANIME_MOUTH_CLOSED;
             a->last_drawn_mouth = ANIME_MOUTH_CLOSED;
@@ -127,7 +191,8 @@ void render(lv_timer_t* timer) {
         if (mode == ANIME_MODE_LISTENING) {
             float t = now / 1000.0f;
             level = 0.05f + 0.05f * sinf(t * 3.0f);
-            anime_pixel_render_240x320(a->pixels, mode, now, level, happy, wink, a->bg_color);
+            anime_pixel_render_240x320(a->pixels, mode, now, level, happy, wink, is_blinking,
+                                       a->bg_color);
             a->last_rendered_frame = ANIME_FRAME_LISTEN;
             lv_obj_invalidate(a->canvas);
         } else {
@@ -143,18 +208,16 @@ void render(lv_timer_t* timer) {
                     target_frame = ANIME_FRAME_SMILE;
                 } else if (wink) {
                     target_frame = ANIME_FRAME_WINK;
+                } else if (is_blinking) {
+                    target_frame = ANIME_FRAME_BLINK;
                 } else {
-                    uint32_t blink_cycle = now % 3500;
-                    if (blink_cycle < 160) {
-                        target_frame = ANIME_FRAME_BLINK;
-                    } else {
-                        target_frame = ANIME_FRAME_IDLE;
-                    }
+                    target_frame = ANIME_FRAME_IDLE;
                 }
             }
 
             if (mode_changed || target_frame != a->last_rendered_frame || happy > 0.0f || wink) {
-                anime_pixel_render_240x320(a->pixels, mode, now, level, happy, wink, a->bg_color);
+                anime_pixel_render_240x320(a->pixels, mode, now, level, happy, wink, is_blinking,
+                                           a->bg_color);
                 a->last_rendered_frame = target_frame;
                 lv_obj_invalidate(a->canvas);
             }

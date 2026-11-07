@@ -245,7 +245,7 @@ static void render_listening_waves(uint16_t* dst, uint32_t elapsed_ms, float mic
 }
 
 void anime_pixel_render_240x320(uint16_t* dst, anime_mode_t mode, uint32_t elapsed_ms, float level,
-                                float happy, bool wink, uint32_t bg_rgb) {
+                                float happy, bool wink, bool blink, uint32_t bg_rgb) {
     if (!dst)
         return;
 
@@ -293,14 +293,10 @@ void anime_pixel_render_240x320(uint16_t* dst, anime_mode_t mode, uint32_t elaps
                 frame = ANIME_FRAME_SMILE;
             } else if (wink) {
                 frame = ANIME_FRAME_WINK;
+            } else if (blink) {
+                frame = ANIME_FRAME_BLINK;
             } else {
-                // Natural periodic two-eye blink every 3.5s for 160ms
-                uint32_t blink_cycle = elapsed_ms % 3500;
-                if (blink_cycle < 160) {
-                    frame = ANIME_FRAME_BLINK;
-                } else {
-                    frame = ANIME_FRAME_IDLE;
-                }
+                frame = ANIME_FRAME_IDLE;
             }
             break;
         }
@@ -309,9 +305,28 @@ void anime_pixel_render_240x320(uint16_t* dst, anime_mode_t mode, uint32_t elaps
     // Direct, ultra-fast 16-bit copy of authentic RGB565 frame (no alpha degrading hair edges)
     memcpy(dst, s_frames_rgb[frame], PIXELS * sizeof(uint16_t));
 
+    // In listening mode, if blinking, overlay the closed eyes patch (keeping hand on headset stationary)
+    if (mode == ANIME_MODE_LISTENING && blink) {
+        anime_pixel_patch_listening_eyes(dst);
+    }
+
     // In listening mode, render dynamic cyan wave arcs near the headset
     if (mode == ANIME_MODE_LISTENING) {
         render_listening_waves(dst, elapsed_ms, level, bg_565);
+    }
+}
+
+void anime_pixel_patch_listening_eyes(uint16_t* dst) {
+    if (!dst) {
+        return;
+    }
+    for (int y = 0; y < ANIME_EYE_H; ++y) {
+        int dst_idx_l = (ANIME_EYE_LEFT_Y + y) * ANIME_IMG_W + ANIME_EYE_LEFT_X;
+        int src_idx = y * ANIME_EYE_W;
+        memcpy(&dst[dst_idx_l], &g_anime_eye_listen_left[src_idx], ANIME_EYE_W * sizeof(uint16_t));
+
+        int dst_idx_r = (ANIME_EYE_RIGHT_Y + y) * ANIME_IMG_W + ANIME_EYE_RIGHT_X;
+        memcpy(&dst[dst_idx_r], &g_anime_eye_listen_right[src_idx], ANIME_EYE_W * sizeof(uint16_t));
     }
 }
 
